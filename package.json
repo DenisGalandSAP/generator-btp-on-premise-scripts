@@ -26,7 +26,7 @@
   "bugs": {
     "url": "https://github.com/DenisGalandSAP/generator-btp-destination/issues"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=20.12"
   },

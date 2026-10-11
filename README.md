@@ -64,3 +64,7 @@ npm version patch                 # or minor / major - bumps package.json (and t
 npm run pack:check                # check the file list that will be published
 npm publish                       # runs npm test first (prepublishOnly); publishConfig makes it public
 ```
+
+## License
+
+[MIT](LICENSE)
