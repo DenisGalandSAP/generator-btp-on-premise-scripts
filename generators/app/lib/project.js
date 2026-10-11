@@ -240,6 +240,43 @@ function deployYaml(root, { port, destination, client, app, pkg, transport, cred
 	return doc.toString({ lineWidth: 0 });
 }
 
+/* ---------- .vscode/launch.json ---------- */
+
+const LAUNCH_CONFIG = {
+	name: "Run with BTP destination (cf ssh)",
+	type: "node-terminal",
+	request: "launch",
+	command: "npm run start-btp",
+	cwd: "${workspaceFolder}"
+};
+
+// launch.json may contain comments and trailing commas (JSONC)
+function parseJsonc(text) {
+	const stripped = text
+		.replace(/("(?:\\.|[^"\\])*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str || "")
+		.replace(/,(\s*[}\]])/g, "$1");
+	return JSON.parse(stripped);
+}
+
+/**
+ * launch.json with the start-btp configuration added. Returns undefined when it is already there,
+ * or { error } when the existing file cannot be read (it is then left untouched).
+ */
+function launchJson(text) {
+	let launch = { version: "0.2.0", configurations: [] };
+	if (text && text.trim()) {
+		try {
+			launch = parseJsonc(text);
+		} catch (e) {
+			return { error: `.vscode/launch.json could not be parsed (${e.message})` };
+		}
+	}
+	if (!Array.isArray(launch.configurations)) launch.configurations = [];
+	if (launch.configurations.some((c) => c && (c.name === LAUNCH_CONFIG.name || c.command === LAUNCH_CONFIG.command))) return undefined;
+	launch.configurations.unshift(LAUNCH_CONFIG);
+	return { text: JSON.stringify(launch, null, 4) + "\n" };
+}
+
 /* ---------- misc ---------- */
 
 function ensureGitignore(text, entry) {
@@ -248,4 +285,4 @@ function ensureGitignore(text, entry) {
 	return (text && !text.endsWith("\n") ? text + "\n" : text || "") + entry + "\n";
 }
 
-module.exports = { inspect, findProjects, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, ensureGitignore, read };
+module.exports = { inspect, findProjects, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, launchJson, ensureGitignore, read };

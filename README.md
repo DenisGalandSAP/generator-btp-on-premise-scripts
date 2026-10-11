@@ -30,6 +30,10 @@ proxy, and forwards each request with the connectivity token, the Cloud Connecto
 | `ui5-deploy-btp.yaml` | `ui5-deploy.yaml` (or `ui5.yaml`) with the `deploy-to-abap` target on the deploy proxy |
 | `.env` | `BTP_*` settings (+ `USR` / `SAP_PWD`); other keys are kept, `.env` is added to `.gitignore` |
 | `package.json` | `btp-proxy`, `start-btp`, `deploy-btp`, `deploy-btp-test` scripts |
+| `.vscode/launch.json` | "Run with BTP destination (cf ssh)" run configuration (`npm run start-btp`); existing configurations are kept |
+
+Start the app with `npm run start-btp` or that run configuration. `npm start` and the Fiori tools
+Run / Preview still use `ui5.yaml`, whose destination only resolves in SAP Business Application Studio.
 
 When the runtime and deploy destinations differ, each gets its own proxy / tunnel
 (5050 / 20003 and 5051 / 20004 – change them in `.env`). The scripts need Node.js 20.12+ and the cf CLI,

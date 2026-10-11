@@ -447,6 +447,10 @@ module.exports = class extends Generator {
 		if (this.needsCredentials) Object.assign(envValues, { USR: a.deployUser, SAP_PWD: a.deployPassword });
 		this._put(".env", project.mergeEnv(project.read(path.join(root, ".env")), envValues, ENV_HEADER));
 
+		const launch = project.launchJson(project.read(path.join(root, ".vscode", "launch.json")));
+		if (launch && launch.error) this.log(`${launch.error} - add a run configuration for 'npm run start-btp' yourself`);
+		else if (launch) this._put(path.join(".vscode", "launch.json"), launch.text);
+
 		const gitignore = project.ensureGitignore(project.read(path.join(root, ".gitignore")), ".env");
 		if (gitignore !== undefined) this._put(".gitignore", gitignore);
 
