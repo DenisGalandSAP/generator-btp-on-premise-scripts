@@ -1,0 +1,108 @@
+"use strict";
+/*
+ * Runs the generator against a copy of a project with the cf helpers stubbed.
+ *   node test/run.js [project folder] [--verbose]
+ * Default project: test/fixture/app. --verbose prints the generated / changed files of each scenario.
+ */
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const assert = require("assert");
+
+const args = process.argv.slice(2);
+const verbose = args.includes("--verbose");
+const fixture = path.join(__dirname, "fixture", "app");
+const source = path.resolve(args.find((a) => !a.startsWith("--")) || fixture);
+const isFixture = source === fixture;
+
+// the environment may load the generator through its own module instance - hand out the stub to every require of lib/cf
+const Module = require("module");
+const cf = { ...require("../generators/app/lib/cf") };
+const originalRequire = Module.prototype.require;
+Module.prototype.require = function (request) {
+	return /[\\/]lib[\\/]cf(\.js)?$/.test(request) || request === "./lib/cf" ? cf : originalRequire.apply(this, arguments);
+};
+const DESTINATIONS = [
+	{ Name: "SYS_DEPLOY", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "NoAuthentication", "sap-client": "100", level: "subaccount" },
+	{ Name: "SYS_RUNTIME", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "BasicAuthentication", User: "TECH", "sap-client": "300", level: "subaccount" },
+	{ Name: "INTERNET", Type: "HTTP", ProxyType: "Internet", URL: "https://example.org", Authentication: "NoAuthentication", level: "subaccount" }
+];
+Object.assign(cf, {
+	loginStatus: async () => ({ loggedIn: true, api: "https://api.cf.eu10.hana.ondemand.com", org: "my-org", space: "dev", user: "tester" }),
+	orgs: async () => [{ name: "my-org", guid: "o1" }],
+	spaces: async () => [{ name: "dev", guid: "s1" }],
+	boundApps: async () => [{ name: "my-srv", guid: "a1" }],
+	sshEnabled: async () => ({ enabled: true }),
+	destinations: async () => DESTINATIONS,
+	target: async () => {}
+});
+
+const helpers = require("yeoman-test");
+const { parseEnv } = require("../generators/app/lib/project");
+
+function copyProject() {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "btp-gen-"));
+	const target = path.join(dir, path.basename(source));
+	fs.cpSync(source, target, { recursive: true, filter: (src) => !/[\\/](node_modules|dist|\.git)$/.test(src) });
+	// the copy starts without the generated files
+	for (const f of ["scripts/btp.js", "scripts/btp-proxy.js", "ui5-btp.yaml", "ui5-deploy-btp.yaml"]) fs.rmSync(path.join(target, f), { force: true });
+	return target;
+}
+
+async function scenario(title, prompts, verify) {
+	const project = copyProject();
+	await helpers
+		.run(path.join(__dirname, "..", "generators", "app"))
+		.cd(project)
+		.withOptions({ skipInstall: true })
+		.withPrompts({ projectPath: project, org: "my-org", space: "dev", app: "my-srv", ...prompts });
+	const read = (f) => fs.readFileSync(path.join(project, f), "utf8");
+	if (verbose) {
+		console.log(`\n================ ${title} (${project})`);
+		for (const f of ["ui5-btp.yaml", "ui5-deploy-btp.yaml"]) console.log(`---- ${f}\n${read(f)}`);
+		console.log(`---- .env (values of USR / SAP_PWD hidden)\n${read(".env").replace(/^(USR|SAP_PWD)=.*$/gm, "$1=***")}`);
+		console.log(`---- package.json scripts\n${JSON.stringify(JSON.parse(read("package.json")).scripts, null, 2)}`);
+	}
+	verify(read, parseEnv(read(".env")));
+	console.log(`OK ${title}`);
+}
+
+(async () => {
+	await scenario(
+		"different destinations, deploy without authentication",
+		{ runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_DEPLOY", abapApp: "zfixture", abapPackage: "zfixture", abapTransport: "SYSK900001", abapClient: "100", deployUser: "DEPLOYER", deployPassword: "p#ss 'x'" },
+		(read, env) => {
+			assert.strictEqual(env.BTP_DESTINATION, "SYS_RUNTIME");
+			assert.strictEqual(env.BTP_DEPLOY_DESTINATION, "SYS_DEPLOY");
+			assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, "5051");
+			assert.strictEqual(env.USR, "DEPLOYER");
+			assert.strictEqual(env.SAP_PWD, "p#ss 'x'");
+			assert.match(read("ui5-deploy-btp.yaml"), /url: http:\/\/localhost:5051/);
+			assert.match(read("ui5-deploy-btp.yaml"), /username: env:USR/);
+			assert.match(read("ui5-deploy-btp.yaml"), /name: ZFIXTURE\n\s+package: ZFIXTURE/);
+			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /destination:/);
+			assert.match(read("ui5-btp.yaml"), /url: http:\/\/localhost:5050/);
+			assert.match(read("scripts/btp.js"), /BTP_DEPLOY_DESTINATION/);
+			assert.match(read(".gitignore"), /^\.env$/m);
+			assert.match(read("package.json"), /"start-btp": "node scripts\/btp.js start"/);
+			if (isFixture) {
+				assert.doesNotMatch(read("ui5-btp.yaml"), /destination:|client:/);
+				assert.match(read("ui5-btp.yaml"), /ignoreCertErrors: false # If set to true/); // comments kept
+				assert.strictEqual(env.OTHER, "keep-me"); // unrelated .env keys kept
+			}
+		}
+	);
+	await scenario(
+		"same destination with basic authentication",
+		{ runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_RUNTIME", abapApp: "ZFIXTURE", abapPackage: "$TMP", abapTransport: "", abapClient: "300" },
+		(read, env) => {
+			assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, undefined);
+			assert.match(read("ui5-deploy-btp.yaml"), /url: http:\/\/localhost:5050/);
+			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /credentials:/);
+			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /transport:/);
+		}
+	);
+})().catch((e) => {
+	console.error(e);
+	process.exit(1);
+});

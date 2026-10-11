@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160">
+  <!-- cloud (BTP) -->
+  <path d="M70 92c-14 0-24-10-24-23 0-12 9-22 21-23 4-15 17-25 33-25 16 0 29 10 33 24 2 0 3-1 5-1 13 0 23 10 23 23 0 14-10 25-24 25"
+        fill="none" stroke="#1B90FF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- tunnel down to the on-premise system -->
+  <path d="M120 70v52" stroke="#89D1FF" stroke-width="9" stroke-linecap="round" stroke-dasharray="2 16"/>
+  <path d="M104 108l16 16 16-16" fill="none" stroke="#89D1FF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- server -->
+  <rect x="84" y="132" width="72" height="22" rx="5" fill="none" stroke="#1B90FF" stroke-width="7"/>
+  <circle cx="98" cy="143" r="4" fill="#89D1FF"/>
+  <circle cx="112" cy="143" r="4" fill="#89D1FF"/>
+</svg>

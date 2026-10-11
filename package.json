@@ -1,0 +1,51 @@
+{
+  "name": "@scodigis/generator-btp-on-premise-scripts",
+  "displayName": "BTP On-Premise Access",
+  "version": "0.1.0",
+  "description": "Adds scripts to run and deploy a SAPUI5 / SAP Fiori elements app through an on-premise SAP BTP destination (cf ssh tunnel to the connectivity proxy).",
+  "main": "generators/app/index.js",
+  "image": "yeoman.svg",
+  "files": [
+    "generators",
+    "yeoman.svg"
+  ],
+  "keywords": [
+    "yeoman-generator",
+    "sapui5",
+    "fiori",
+    "sapbtp",
+    "destination",
+    "cloud-foundry"
+  ],
+  "author": "Scodigis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DenisGalandSAP/generator-btp-destination.git"
+  },
+  "homepage": "https://github.com/DenisGalandSAP/generator-btp-destination#readme",
+  "bugs": {
+    "url": "https://github.com/DenisGalandSAP/generator-btp-destination/issues"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "test": "node test/run.js",
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "@sap-devx/yeoman-ui-types": "^1.25.1",
+    "yaml": "^2.9.1",
+    "yeoman-generator": "^5.10.0"
+  },
+  "devDependencies": {
+    "yeoman-environment": "^3.19.3",
+    "yeoman-test": "^6.3.0"
+  }
+}
