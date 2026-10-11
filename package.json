@@ -20,11 +20,11 @@
   "author": "Scodigis",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DenisGalandSAP/generator-btp-destination.git"
+    "url": "git+https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts.git"
   },
-  "homepage": "https://github.com/DenisGalandSAP/generator-btp-destination#readme",
+  "homepage": "https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts#readme",
   "bugs": {
-    "url": "https://github.com/DenisGalandSAP/generator-btp-destination/issues"
+    "url": "https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts/issues"
   },
   "license": "MIT",
   "engines": {
