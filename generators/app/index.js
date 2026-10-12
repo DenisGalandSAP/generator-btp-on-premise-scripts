@@ -3,8 +3,12 @@
  * Adds scripts/btp-proxy.js + scripts/btp.js to a SAPUI5 / SAP Fiori elements project so it can run and
  * deploy through on-premise BTP destinations (cf ssh tunnel to the connectivity proxy of a CF app).
  *
- * Steps: project -> Cloud Foundry endpoint + login (only when needed) -> org / space / app -> runtime + deploy
- * destination -> deploy target and credentials (when the deploy destination has no authentication).
+ * One run sets up one environment (dev, qual, ...): .env.<name>, ui5-btp-<name>.yaml, ui5-deploy-btp-<name>.yaml and
+ * the npm scripts start-btp:<name> / deploy-btp:<name>; each environment keeps its own API endpoint, org, space and ports.
+ *
+ * Steps: project + environment -> Cloud Foundry endpoint + login (only when needed) -> org / space / app -> runtime + optional
+ * deploy destination -> deploy target and credentials (only with a deploy destination; credentials when it has
+ * no authentication).
  */
 const Generator = require("yeoman-generator");
 const path = require("path");
@@ -15,10 +19,10 @@ const regions = require("./lib/regions");
 
 const STEPS = {
 	project: { name: "Project", description: "SAPUI5 or SAP Fiori elements project to add the BTP destination scripts to" },
-	endpoint: { name: "Cloud Foundry Endpoint", description: "You are not logged in to Cloud Foundry (or the session expired) - select the region of the subaccount" },
+	endpoint: { name: "Cloud Foundry Endpoint", description: "Region of the subaccount the environment lives in (asked when not logged in, the session expired or another region was chosen)" },
 	login: { name: "Cloud Foundry Login", description: "Log on to the Cloud Foundry environment of the subaccount" },
 	target: { name: "Cloud Foundry Target", description: "Org and space of the CF app the local proxy tunnels through (bound to the destination and connectivity services, SSH enabled) - picked automatically when there is only one, created when there is none" },
-	destinations: { name: "Destinations", description: "Destination used to run the app and destination used to deploy it" },
+	destinations: { name: "Destinations", description: "Destination used to run the app and, optionally, destination used to deploy it" },
 	deploy: { name: "Deployment", description: "ABAP repository target and logon for the deploy destination" }
 };
 
@@ -27,11 +31,17 @@ const DIRECT_ACCESS_NOTE =
 	"add the system with the Service Center of SAP Fiori tools instead.";
 
 const OTHER_ENDPOINT = "other";
+const CURRENT_SESSION = "current";
+const OTHER_SESSION = "login";
+const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]*$/i;
 
 const SUPPORTED_AUTH = ["NoAuthentication", "BasicAuthentication"];
 const RUNTIME_PORTS = { proxy: 5050, tunnel: 20003 };
 const DEPLOY_PORTS = { proxy: 5051, tunnel: 20004 };
-const ENV_HEADER = "SAP BTP on-premise access (@scodigis/generator-btp-on-premise-scripts)";
+const PORT_KEYS = ["BTP_PROXY_PORT", "BTP_TUNNEL_PORT", "BTP_DEPLOY_PROXY_PORT", "BTP_DEPLOY_TUNNEL_PORT"];
+// keys a project set up before environments existed has in .env
+const LEGACY_ENV_KEYS = ["BTP_APP", "BTP_CF_ORG", "BTP_CF_SPACE", "BTP_DESTINATION", "BTP_DEPLOY_DESTINATION", ...PORT_KEYS];
+const ENV_HEADER ="SAP BTP on-premise access (@scodigis/generator-btp-on-premise-scripts)";
 
 const required = (label) => (value) => (value && String(value).trim() ? true : `${label} is required`);
 
@@ -89,38 +99,94 @@ module.exports = class extends Generator {
 				if (info.error) return "";
 				const notes = [`${info.kind} app '${info.id}'`];
 				if (!info.hasBuildScript) notes.push("WARNING: package.json has no 'build' script, deploy-btp needs one");
+				const existing = project.profiles(info.root);
+				if (existing.length) notes.push(`environments set up: ${existing.join(", ")}`);
 				return notes.join(" - ");
-			})
+			}),
+			{
+				type: "input",
+				name: "profile",
+				message: "Environment",
+				default: (a) => project.profiles(a.projectPath)[0] || "dev",
+				guiOptions: {
+					mandatory: true,
+					hint: "e.g. dev, qual, prod - each environment gets its own .env.<name>, ui5-btp-<name>.yaml and npm scripts (start-btp:<name>...). " +
+						"Run the generator again with another name to add one, with an existing name to change it"
+				},
+				validate: (v) => (PROFILE_NAME.test((v || "").trim()) ? true : "Letters, digits, - and _ (e.g. dev, qual)"),
+				filter: (v) => (v || "").trim().toLowerCase()
+			},
+			{
+				type: "list",
+				name: "cfSession",
+				message: "Cloud Foundry",
+				choices: () => [
+					{ name: `Use the current session: ${this.cfStatus.api} as ${this.cfStatus.user || "?"}`, value: CURRENT_SESSION },
+					{ name: "Log in to another region / subaccount", value: OTHER_SESSION }
+				],
+				// an environment set up on another API endpoint logs in there again
+				default: (a) => {
+					const api = this._profileEnv(a.projectPath, (a.profile || "").trim().toLowerCase()).values.BTP_CF_API;
+					return api && !cf.sameApi(api, this.cfStatus.api) ? OTHER_SESSION : CURRENT_SESSION;
+				},
+				when: () => this.cfStatus.loggedIn,
+				guiOptions: { hint: "Orgs of every subaccount in the same region are reachable with the current session; another region needs a login" }
+			}
 		]);
 		this.project = project.inspect(answers.projectPath);
-		this.existingEnv = project.parseEnv(project.read(path.join(this.project.root, ".env")));
-		if (!this.isGui) this.log(`${this.project.kind} app '${this.project.id}'`);
+		this.profile = (answers.profile || "dev").trim().toLowerCase();
+		const prev = this._profileEnv(this.project.root, this.profile);
+		this.existingEnv = prev.values;
+		this.migrateLegacy = prev.legacy;
+		this.cfSession = answers.cfSession || CURRENT_SESSION;
+		if (!this.isGui) this.log(`${this.project.kind} app '${this.project.id}', environment '${this.profile}'`);
+	}
+
+	// settings of an environment - a project set up before environments existed has them in .env
+	_profileEnv(root, profile) {
+		const own = project.read(path.join(root || "", `.env.${profile}`));
+		if (own !== undefined) return { values: project.parseEnv(own), legacy: false };
+		const legacy = project.parseEnv(project.read(path.join(root || "", ".env")));
+		return legacy.BTP_APP ? { values: legacy, legacy: true } : { values: {}, legacy: false };
 	}
 
 	/* ---------- 2. login ---------- */
 
 	// SAP BTP Cloud Foundry regions, as offered by the Cloud Connector when adding a subaccount
+	// API endpoint of the environment when it has one, else the one the cf CLI points at
+	_preferredApi() {
+		return (this.existingEnv.BTP_CF_API || this.cfStatus.api || "").replace(/\/+$/, "");
+	}
+
 	async _endpointChoices() {
 		if (!this.regions) this.regions = await regions.list();
-		const current = (this.cfStatus.api || "").replace(/\/+$/, "");
 		const choices = this.regions.regions.map((r) => ({ name: `${r.key}  -  ${r.location} - ${r.provider}  (${r.api})`, value: r.api }));
-		if (current && !choices.some((c) => c.value === current)) choices.unshift({ name: `${current}  (current cf target)`, value: current });
+		const known = [
+			[this.existingEnv.BTP_CF_API, `environment '${this.profile}'`],
+			[this.cfStatus.api, "current cf target"]
+		];
+		for (const [api, origin] of known.reverse()) {
+			const value = (api || "").replace(/\/+$/, "");
+			if (value && !choices.some((c) => c.value === value)) choices.unshift({ name: `${value}  (${origin})`, value });
+		}
 		choices.push({ name: "Other - enter the API endpoint", value: OTHER_ENDPOINT });
 		return choices;
 	}
 
 	async _promptLogin() {
 		const endpoint = await this.prompt([
-			this._label("loginInfo", () =>
-				this.cfStatus.api
+			this._label("loginInfo", () => {
+				if (this.cfStatus.loggedIn) return `Currently logged in to ${this.cfStatus.api} as ${this.cfStatus.user || "?"} - select the region of the subaccount of '${this.profile}'.`;
+				return this.cfStatus.api
 					? `The Cloud Foundry session for ${this.cfStatus.api} is not valid anymore${this.cfStatus.error ? ` (${this.cfStatus.error})` : ""}.`
-					: "The cf CLI has no API endpoint yet."),
+					: "The cf CLI has no API endpoint yet.";
+			}),
 			{
 				type: "list",
 				name: "cfRegion",
 				message: "Region (API endpoint)",
 				choices: () => this._endpointChoices(),
-				default: (this.cfStatus.api || "").replace(/\/+$/, "") || "https://api.cf.eu10.hana.ondemand.com",
+				default: this._preferredApi() || "https://api.cf.eu10.hana.ondemand.com",
 				guiOptions: {
 					mandatory: true,
 					hint: "Cloud Foundry API endpoint of the subaccount, see the subaccount overview in the BTP cockpit (regions listed from SAP Help, built-in list when offline)"
@@ -153,7 +219,7 @@ module.exports = class extends Generator {
 		// validate runs again on "Next" - a passcode is single-use, so never log in twice with the same input
 		let loggedInWith;
 		const login = async (key, doLogin) => {
-			if (loggedInWith === key && this.cfStatus.loggedIn) return true;
+			if (loggedInWith === key) return true;
 			try {
 				await doLogin();
 			} catch (e) {
@@ -214,7 +280,11 @@ module.exports = class extends Generator {
 			}
 		]);
 		// not every prompt implementation runs validate
-		if (!this.cfStatus.loggedIn) await this._check(loginWith(credentials));
+		if (!loggedInWith) await this._check(loginWith(credentials));
+		// the scripts log in again the same way when the session expires
+		this.loginSso = sso;
+		// orgs / spaces / apps of the previous session do not apply anymore
+		this.cache = { orgs: undefined, spaces: new Map(), apps: new Map(), destinations: new Map() };
 	}
 
 	/* ---------- 3. org / space / app ---------- */
@@ -358,7 +428,7 @@ module.exports = class extends Generator {
 	async _promptDestinations() {
 		const prev = this.existingEnv;
 		// destinations of the existing ui5.yaml / ui5-deploy.yaml, used when .env has none yet
-		const deployDest = project.deployDefaults(this.project.root).destination;
+		const deployDest = project.deployDefaults(this.project.root, this.profile).destination;
 		const runtimeDests = project.runtimeDestinations(this.project.root);
 		const describe = async (name, purpose) => {
 			const d = await this._destination(name);
@@ -382,28 +452,42 @@ module.exports = class extends Generator {
 			},
 			this._label("runtimeAuthInfo", (a) => describe(a.runtimeDestination, "Runtime")),
 			{
+				type: "confirm",
+				name: "setupDeploy",
+				message: "Also deploy through a BTP destination (npm run deploy-btp)",
+				// off only when an earlier run left it out
+				default: !(prev.BTP_DESTINATION && !prev.BTP_DEPLOY_DESTINATION),
+				guiOptions: { hint: "Leave unchecked to only run the app through the destination - the Deployment step is skipped" }
+			},
+			{
 				type: "list",
 				name: "deployDestination",
 				message: "Deploy destination (npm run deploy-btp)",
 				choices: () => this._destinationChoices(),
 				default: (a) => this._knownDestination(prev.BTP_DEPLOY_DESTINATION, deployDest, a.runtimeDestination),
+				when: (a) => a.setupDeploy !== false,
 				guiOptions: { mandatory: true, hint: "The ABAP repository upload (/sap/opu/odata/UI5/ABAP_REPOSITORY_SRV) goes through this destination" },
 				validate: validateDestination
 			},
-			this._label("deployAuthInfo", (a) => describe(a.deployDestination, "Deploy"))
+			this._label("deployAuthInfo", (a) => describe(a.deployDestination, "Deploy"), (a) => a.setupDeploy !== false)
 		]);
+		this.setupDeploy = answers.setupDeploy !== false;
 		await this._check(validateDestination(answers.runtimeDestination));
-		await this._check(validateDestination(answers.deployDestination));
+		if (this.setupDeploy) await this._check(validateDestination(answers.deployDestination));
+		else delete answers.deployDestination;
 		Object.assign(this.answers, answers);
 		this.runtimeDest = await this._destination(answers.runtimeDestination);
-		this.deployDest = await this._destination(answers.deployDestination);
+		this.deployDest = this.setupDeploy ? await this._destination(answers.deployDestination) : undefined;
+		// no deployment - drop the Deployment step from the wizard
+		const deployStep = this.prompts.items.indexOf(STEPS.deploy);
+		if (!this.setupDeploy && deployStep >= 0) this.prompts.splice(deployStep, 1);
 	}
 
 	/* ---------- 5. deploy ---------- */
 
 	async _promptDeploy() {
 		const prev = this.existingEnv;
-		const defaults = project.deployDefaults(this.project.root);
+		const defaults = project.deployDefaults(this.project.root, this.profile);
 		this.needsCredentials = this.deployDest.Authentication === "NoAuthentication";
 		const answers = await this.prompt([
 			this._label("deployInfo", () =>
@@ -470,10 +554,13 @@ module.exports = class extends Generator {
 
 	async prompting() {
 		await this._promptProject();
-		if (!this.cfStatus.loggedIn) await this._promptLogin();
+		if (this.cfSession === OTHER_SESSION && !this.prompts.items.includes(STEPS.login)) {
+			this.prompts.splice(this.prompts.items.indexOf(STEPS.project) + 1, 0, [STEPS.endpoint, STEPS.login]);
+		}
+		if (!this.cfStatus.loggedIn || this.cfSession === OTHER_SESSION) await this._promptLogin();
 		await this._promptTarget();
 		await this._promptDestinations();
-		await this._promptDeploy();
+		if (this.setupDeploy) await this._promptDeploy();
 	}
 
 	/* ---------- writing ---------- */
@@ -485,76 +572,143 @@ module.exports = class extends Generator {
 		this.fs.store.get(target).conflicter = "force";
 	}
 
+	_remove(file) {
+		const target = path.join(this.project.root, file);
+		if (this.fs.exists(target)) this.fs.delete(target);
+	}
+
+	/**
+	 * Proxy / tunnel ports of this environment: its own ones when no other environment uses them, else the first
+	 * free set (5050 / 20003 + 5051 / 20004, then +2 each) - so several environments can run side by side.
+	 */
+	_ports() {
+		const used = new Set();
+		for (const other of project.profiles(this.project.root).filter((p) => p !== this.profile)) {
+			const env = project.parseEnv(project.read(path.join(this.project.root, `.env.${other}`)));
+			for (const key of PORT_KEYS) if (env[key]) used.add(Number(env[key]));
+		}
+		const prev = this.existingEnv;
+		const candidates = [];
+		if (prev.BTP_PROXY_PORT) {
+			const runtime = { proxy: Number(prev.BTP_PROXY_PORT), tunnel: Number(prev.BTP_TUNNEL_PORT || RUNTIME_PORTS.tunnel) };
+			const deploy = prev.BTP_DEPLOY_PROXY_PORT
+				? { proxy: Number(prev.BTP_DEPLOY_PROXY_PORT), tunnel: Number(prev.BTP_DEPLOY_TUNNEL_PORT || DEPLOY_PORTS.tunnel) }
+				: { proxy: runtime.proxy + 1, tunnel: runtime.tunnel + 1 };
+			candidates.push({ runtime, deploy });
+		}
+		for (let slot = 0; slot < 50; slot++) {
+			candidates.push({
+				runtime: { proxy: RUNTIME_PORTS.proxy + 2 * slot, tunnel: RUNTIME_PORTS.tunnel + 2 * slot },
+				deploy: { proxy: DEPLOY_PORTS.proxy + 2 * slot, tunnel: DEPLOY_PORTS.tunnel + 2 * slot }
+			});
+		}
+		return candidates.find((c) => ![c.runtime.proxy, c.runtime.tunnel, c.deploy.proxy, c.deploy.tunnel].some((p) => used.has(p)));
+	}
+
 	writing() {
 		const root = this.project.root;
 		const a = this.answers;
+		const p = this.profile;
+		const scripts = { start: `start-btp:${p}`, deploy: `deploy-btp:${p}`, deployTest: `deploy-btp-test:${p}`, proxy: `btp-proxy:${p}` };
 		const sameDestination = a.runtimeDestination === a.deployDestination;
-		const deployPorts = sameDestination
-			? { proxy: Number(this.existingEnv.BTP_PROXY_PORT || RUNTIME_PORTS.proxy), tunnel: Number(this.existingEnv.BTP_TUNNEL_PORT || RUNTIME_PORTS.tunnel) }
-			: { proxy: Number(this.existingEnv.BTP_DEPLOY_PROXY_PORT || DEPLOY_PORTS.proxy), tunnel: Number(this.existingEnv.BTP_DEPLOY_TUNNEL_PORT || DEPLOY_PORTS.tunnel) };
-		const runtimePort = Number(this.existingEnv.BTP_PROXY_PORT || RUNTIME_PORTS.proxy);
+		const ports = this._ports();
+		const deployPorts = sameDestination ? ports.runtime : ports.deploy;
 
-		for (const script of ["btp-proxy.js", "btp.js"]) {
+		for (const script of ["btp-env.js", "btp-proxy.js", "btp.js"]) {
 			this._put(path.join("scripts", script), this.fs.read(this.templatePath("scripts", script)));
 		}
 
-		this._put("ui5-btp.yaml", project.runtimeYaml(this.fs.read(path.join(root, "ui5.yaml")), { port: runtimePort, destination: a.runtimeDestination }));
-		this._put("ui5-deploy-btp.yaml", project.deployYaml(root, {
-			port: deployPorts.proxy,
-			destination: a.deployDestination,
-			client: a.abapClient,
-			app: a.abapApp,
-			pkg: a.abapPackage,
-			transport: a.abapTransport,
-			credentials: this.needsCredentials
+		this._put(`ui5-btp-${p}.yaml`, project.runtimeYaml(this.fs.read(path.join(root, "ui5.yaml")), {
+			port: ports.runtime.proxy,
+			destination: a.runtimeDestination,
+			script: scripts.start
 		}));
+		if (this.setupDeploy) {
+			this._put(`ui5-deploy-btp-${p}.yaml`, project.deployYaml(root, {
+				port: deployPorts.proxy,
+				destination: a.deployDestination,
+				client: a.abapClient,
+				app: a.abapApp,
+				pkg: a.abapPackage,
+				transport: a.abapTransport,
+				credentials: this.needsCredentials,
+				script: scripts.deploy
+			}));
+		} else {
+			this._remove(`ui5-deploy-btp-${p}.yaml`);
+		}
 
+		// undefined removes the key - the BTP_DEPLOY_* keys go when there is no deployment
 		const envValues = {
-			BTP_APP: a.app,
+			BTP_CF_API: this.cfStatus.api,
 			BTP_CF_ORG: a.org,
 			BTP_CF_SPACE: a.space,
+			BTP_CF_SSO: this.loginSso === undefined ? this.existingEnv.BTP_CF_SSO : this.loginSso ? "true" : undefined,
+			BTP_APP: a.app,
 			BTP_DESTINATION: a.runtimeDestination,
-			BTP_PROXY_PORT: runtimePort,
-			BTP_TUNNEL_PORT: this.existingEnv.BTP_TUNNEL_PORT || RUNTIME_PORTS.tunnel,
+			BTP_PROXY_PORT: ports.runtime.proxy,
+			BTP_TUNNEL_PORT: ports.runtime.tunnel,
 			BTP_DEPLOY_DESTINATION: a.deployDestination,
-			BTP_DEPLOY_PROXY_PORT: sameDestination ? undefined : deployPorts.proxy,
-			BTP_DEPLOY_TUNNEL_PORT: sameDestination ? undefined : deployPorts.tunnel
+			BTP_DEPLOY_PROXY_PORT: this.setupDeploy && !sameDestination ? deployPorts.proxy : undefined,
+			BTP_DEPLOY_TUNNEL_PORT: this.setupDeploy && !sameDestination ? deployPorts.tunnel : undefined
 		};
 		if (this.needsCredentials) Object.assign(envValues, { USR: a.deployUser, SAP_PWD: a.deployPassword });
-		this._put(".env", project.mergeEnv(project.read(path.join(root, ".env")), envValues, ENV_HEADER));
+		const envFile = `.env.${p}`;
+		this._put(envFile, project.mergeEnv(project.read(path.join(root, envFile)), envValues, `${ENV_HEADER} - environment '${p}'`));
 
-		const launch = project.launchJson(project.read(path.join(root, ".vscode", "launch.json")));
-		if (launch && launch.error) this.log(`${launch.error} - add a run configuration for 'npm run start-btp' yourself`);
+		// a project set up before environments existed: its settings moved to .env.<name>, the old files and scripts go
+		if (this.migrateLegacy) {
+			const legacyKeys = Object.fromEntries([...LEGACY_ENV_KEYS, ...(this.needsCredentials ? ["USR", "SAP_PWD"] : [])].map((k) => [k, undefined]));
+			this._put(".env", project.mergeEnv(project.read(path.join(root, ".env")), legacyKeys));
+			this._remove("ui5-btp.yaml");
+			this._remove("ui5-deploy-btp.yaml");
+		}
+
+		const launch = project.launchJson(project.read(path.join(root, ".vscode", "launch.json")), p, { dropLegacy: this.migrateLegacy });
+		if (launch && launch.error) this.log(`${launch.error} - add a run configuration for 'npm run ${scripts.start}' yourself`);
 		else if (launch) this._put(path.join(".vscode", "launch.json"), launch.text);
 
-		const gitignore = project.ensureGitignore(project.read(path.join(root, ".gitignore")), ".env");
-		if (gitignore !== undefined) this._put(".gitignore", gitignore);
+		let gitignore = project.read(path.join(root, ".gitignore"));
+		for (const entry of [".env", envFile]) gitignore = project.ensureGitignore(gitignore, entry) ?? gitignore;
+		if (gitignore !== project.read(path.join(root, ".gitignore"))) this._put(".gitignore", gitignore);
 
-		const pkg = JSON.parse(this.fs.read(path.join(root, "package.json")));
-		pkg.scripts = {
-			...pkg.scripts,
-			"btp-proxy": "node scripts/btp-proxy.js",
-			"start-btp": "node scripts/btp.js start",
-			"deploy-btp": "node scripts/btp.js deploy",
-			"deploy-btp-test": "node scripts/btp.js deploy --test"
-		};
-		const indent = (/^\{\r?\n([ \t]+)"/.exec(this.fs.read(path.join(root, "package.json"))) || [])[1] || "  ";
+		const pkgText = this.fs.read(path.join(root, "package.json"));
+		const pkg = JSON.parse(pkgText);
+		pkg.scripts = { ...pkg.scripts };
+		if (this.migrateLegacy) for (const name of ["btp-proxy", "start-btp", "deploy-btp", "deploy-btp-test"]) delete pkg.scripts[name];
+		Object.assign(pkg.scripts, {
+			[scripts.proxy]: `node scripts/btp-proxy.js --profile ${p}`,
+			[scripts.start]: `node scripts/btp.js start ${p}`
+		});
+		if (this.setupDeploy) {
+			Object.assign(pkg.scripts, { [scripts.deploy]: `node scripts/btp.js deploy ${p}`, [scripts.deployTest]: `node scripts/btp.js deploy ${p} --test` });
+		} else {
+			delete pkg.scripts[scripts.deploy];
+			delete pkg.scripts[scripts.deployTest];
+		}
+		const indent = (/^\{\r?\n([ \t]+)"/.exec(pkgText) || [])[1] || "  ";
 		this._put("package.json", JSON.stringify(pkg, null, indent) + "\n");
+		this.scripts = scripts;
 	}
 
 	async end() {
 		const a = this.answers;
+		const s = this.scripts;
 		try {
 			await cf.target(a.org, a.space);
 			this.log(`cf now targets ${a.org}/${a.space}`);
 		} catch (e) {
 			this.log(`Could not run 'cf target -o "${a.org}" -s "${a.space}"': ${e.message}`);
 		}
+		const pad = (name) => `  npm run ${name}`.padEnd(36);
 		this.log("");
-		this.log(`BTP destination scripts added to ${this.project.root}`);
-		this.log(`  npm run start-btp        run the app through ${a.runtimeDestination}`);
-		this.log(`  npm run deploy-btp       build + deploy through ${a.deployDestination}`);
-		this.log("  npm run deploy-btp-test  same, test mode");
-		this.log("  npm run btp-proxy        only the proxy (runtime destination)");
+		this.log(`BTP destination scripts for environment '${this.profile}' added to ${this.project.root}`);
+		this.log(`${pad(s.start)}run the app through ${a.runtimeDestination}`);
+		if (this.setupDeploy) {
+			this.log(`${pad(s.deploy)}build + deploy through ${a.deployDestination}`);
+			this.log(`${pad(s.deployTest)}same, test mode`);
+		}
+		this.log(`${pad(s.proxy)}only the proxy (runtime destination)`);
+		this.log(`The scripts point cf at ${this.cfStatus.api} ${a.org}/${a.space} themselves (cf login in the terminal when needed).`);
 	}
 };

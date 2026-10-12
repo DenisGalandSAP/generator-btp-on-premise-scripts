@@ -95,6 +95,20 @@ function findProjects(folders) {
 
 /* ---------- .env ---------- */
 
+/** Environments set up in a project: names of the .env.<name> files that hold BTP_APP, sorted. */
+function profiles(root) {
+	let files = [];
+	try {
+		files = fs.readdirSync(root);
+	} catch (e) {
+		return [];
+	}
+	return files
+		.filter((f) => /^\.env\.[\w-]+$/.test(f) && parseEnv(read(path.join(root, f))).BTP_APP)
+		.map((f) => f.slice(".env.".length))
+		.sort();
+}
+
 function parseEnv(text) {
 	const values = {};
 	for (const line of (text || "").split(/\r?\n/)) {
@@ -149,11 +163,11 @@ function mergeEnv(text, values, header) {
 const BACKEND_KEYS_TO_DROP = ["destination", "destinationInstance", "client", "scp", "authenticationType", "connectionType", "apiHub"];
 
 /** ui5-btp.yaml: ui5.yaml with every fiori-tools-proxy backend pointing at the local btp-proxy. */
-function runtimeYaml(ui5Text, { port, destination }) {
+function runtimeYaml(ui5Text, { port, destination, script = "start-btp" }) {
 	const doc = parseUi5Yaml(ui5Text);
 	const url = () => {
 		const node = doc.createNode(`http://localhost:${port}`);
-		node.comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run start-btp)`;
+		node.comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run ${script})`;
 		return node;
 	};
 	let middlewares = doc.getIn(["server", "customMiddleware"]);
@@ -188,12 +202,20 @@ function findDeployTask(doc) {
 
 /**
  * App name / package / transport / client / destination of an existing deploy configuration, if any.
- * ui5-deploy-btp.yaml wins over ui5-deploy.yaml; its target is the local proxy, so the BTP destination
- * comes from ui5-deploy.yaml.
+ * The environment's own ui5-deploy-btp-<profile>.yaml wins, then the one of a project set up before
+ * environments existed, then those of the other environments (same app and package), then ui5-deploy.yaml.
+ * The ui5-deploy-btp*.yaml target the local proxy, so the BTP destination comes from ui5-deploy.yaml.
  */
-function deployDefaults(root) {
+function deployDefaults(root, profile) {
 	const result = {};
-	for (const file of ["ui5-deploy-btp.yaml", "ui5-deploy.yaml"]) {
+	let others = [];
+	try {
+		others = fs.readdirSync(root).filter((f) => /^ui5-deploy-btp-[\w-]+\.yaml$/.test(f)).sort();
+	} catch (e) {
+		/* no folder */
+	}
+	const files = [...new Set([...(profile ? [`ui5-deploy-btp-${profile}.yaml`] : []), "ui5-deploy-btp.yaml", ...others, "ui5-deploy.yaml"])];
+	for (const file of files) {
 		const text = read(path.join(root, file));
 		if (!text) continue;
 		try {
@@ -237,13 +259,13 @@ function runtimeDestinations(root) {
  * ui5-deploy-btp.yaml: based on ui5-deploy.yaml when there is one (keeps its custom tasks), otherwise
  * on ui5.yaml without the server part. The deploy-to-abap target is the local btp-proxy.
  */
-function deployYaml(root, { port, destination, client, app, pkg, transport, credentials }) {
+function deployYaml(root, { port, destination, client, app, pkg, transport, credentials, script = "deploy-btp" }) {
 	const deployText = read(path.join(root, "ui5-deploy.yaml"));
 	const doc = parseUi5Yaml(deployText || read(path.join(root, "ui5.yaml")));
 	if (!deployText) doc.delete("server");
 
 	const target = doc.createNode({ url: `http://localhost:${port}`, ...(client ? { client: String(client) } : {}) });
-	target.get("url", true).comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run deploy-btp)`;
+	target.get("url", true).comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run ${script})`;
 	const appNode = { name: app, package: pkg, ...(transport ? { transport } : {}) };
 
 	let task = findDeployTask(doc);
@@ -266,13 +288,14 @@ function deployYaml(root, { port, destination, client, app, pkg, transport, cred
 
 /* ---------- .vscode/launch.json ---------- */
 
-const LAUNCH_CONFIG = {
-	name: "Run with BTP destination (cf ssh)",
+const LEGACY_LAUNCH = { name: "Run with BTP destination (cf ssh)", command: "npm run start-btp" };
+const launchConfig = (profile) => ({
+	name: `Run with BTP destination (${profile})`,
 	type: "node-terminal",
 	request: "launch",
-	command: "npm run start-btp",
+	command: `npm run start-btp:${profile}`,
 	cwd: "${workspaceFolder}"
-};
+});
 
 // launch.json may contain comments and trailing commas (JSONC)
 function parseJsonc(text) {
@@ -283,10 +306,12 @@ function parseJsonc(text) {
 }
 
 /**
- * launch.json with the start-btp configuration added. Returns undefined when it is already there,
- * or { error } when the existing file cannot be read (it is then left untouched).
+ * launch.json with the start-btp:<profile> configuration added (dropLegacy: without the one of a project set up
+ * before environments existed). Returns undefined when there is nothing to change, or { error } when the existing
+ * file cannot be read (it is then left untouched).
  */
-function launchJson(text) {
+function launchJson(text, profile, { dropLegacy = false } = {}) {
+	const config = launchConfig(profile);
 	let launch = { version: "0.2.0", configurations: [] };
 	if (text && text.trim()) {
 		try {
@@ -296,8 +321,11 @@ function launchJson(text) {
 		}
 	}
 	if (!Array.isArray(launch.configurations)) launch.configurations = [];
-	if (launch.configurations.some((c) => c && (c.name === LAUNCH_CONFIG.name || c.command === LAUNCH_CONFIG.command))) return undefined;
-	launch.configurations.unshift(LAUNCH_CONFIG);
+	const before = launch.configurations.length;
+	if (dropLegacy) launch.configurations = launch.configurations.filter((c) => !(c && c.name === LEGACY_LAUNCH.name && c.command === LEGACY_LAUNCH.command));
+	const present = launch.configurations.some((c) => c && (c.name === config.name || c.command === config.command));
+	if (present && launch.configurations.length === before) return undefined;
+	if (!present) launch.configurations.unshift(config);
 	return { text: JSON.stringify(launch, null, 4) + "\n" };
 }
 
@@ -309,4 +337,4 @@ function ensureGitignore(text, entry) {
 	return (text && !text.endsWith("\n") ? text + "\n" : text || "") + entry + "\n";
 }
 
-module.exports = { inspect, findProjects, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read };
+module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read };

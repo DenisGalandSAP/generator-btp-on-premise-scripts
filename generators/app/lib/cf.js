@@ -196,6 +196,12 @@ async function destinations(appGuid) {
 	return [...byName.values()].sort((a, b) => a.Name.localeCompare(b.Name));
 }
 
+/** Same API endpoint, ignoring case and trailing slashes. */
+function sameApi(a, b) {
+	const norm = (u) => (u || "").trim().replace(/\/+$/, "").toLowerCase();
+	return norm(a) === norm(b);
+}
+
 async function target(org, space) {
 	await cf(["target", "-o", org, "-s", space]);
 }
@@ -274,4 +280,4 @@ async function createTunnelApp(org, space, spaceGuid, log = () => {}) {
 	return TUNNEL.app;
 }
 
-module.exports = { loginStatus, loginUrl, loginWithPasscode, loginWithPassword, orgs, spaces, boundApps, sshEnabled, destinations, target, createTunnelApp, TUNNEL };
+module.exports = { loginStatus, loginUrl, loginWithPasscode, loginWithPassword, orgs, spaces, boundApps, sshEnabled, destinations, target, createTunnelApp, sameApi, TUNNEL };
