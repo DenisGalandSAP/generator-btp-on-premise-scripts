@@ -59,7 +59,7 @@ if (!env.BTP_APP || !proxyConfig.destination) {
 
 function proxyHealth(port) {
 	return new Promise((resolve) => {
-		const req = http.get({ host: "localhost", port, path: "/__btp-proxy/health", timeout: 3000 }, (res) => {
+		const req = http.get({ host: "127.0.0.1", port, path: "/__btp-proxy/health", timeout: 3000 }, (res) => {
 			let body = "";
 			res.on("data", (c) => (body += c));
 			res.on("end", () => {

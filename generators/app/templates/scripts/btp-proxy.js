@@ -5,7 +5,7 @@
  * - Reads destination + connectivity credentials from a CF app's environment
  *   (in memory, via `cf curl`, nothing written to disk).
  * - Opens `cf ssh -L` to the connectivity proxy (only reachable from inside CF).
- * - Listens on http://localhost:<PORT> and forwards every request through the
+ * - Listens on http://127.0.0.1:<PORT> (this machine only) and forwards every request through the
  *   tunnel to the destination's URL, adding the connectivity JWT, the Cloud
  *   Connector location id and sap-client.
  *
@@ -63,11 +63,11 @@ async function waitForPort(port, timeoutMs) {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		const open = await new Promise((resolve) => {
-			const socket = net.connect({ host: "localhost", port }, () => { socket.destroy(); resolve(true); });
+			const socket = net.connect({ host: "127.0.0.1", port }, () => { socket.destroy(); resolve(true); });
 			socket.on("error", () => resolve(false));
 		});
 		if (open) return;
-		if (Date.now() > deadline) throw new Error(`ssh tunnel not ready on localhost:${port} after ${timeoutMs / 1000}s`);
+		if (Date.now() > deadline) throw new Error(`ssh tunnel not ready on 127.0.0.1:${port} after ${timeoutMs / 1000}s`);
 		await new Promise((r) => setTimeout(r, 500));
 	}
 }
@@ -120,8 +120,8 @@ async function main() {
 
 	const proxyHost = connCreds.onpremise_proxy_host;
 	const proxyPort = connCreds.onpremise_proxy_http_port || connCreds.onpremise_proxy_port;
-	console.log(`[btp-proxy] opening ssh tunnel localhost:${TUNNEL_PORT} -> ${proxyHost}:${proxyPort} via '${APP}'...`);
-	const tunnel = spawn(...cfCommand(["ssh", APP, "-N", "-L", `${TUNNEL_PORT}:${proxyHost}:${proxyPort}`], { stdio: "inherit" }));
+	console.log(`[btp-proxy] opening ssh tunnel 127.0.0.1:${TUNNEL_PORT} -> ${proxyHost}:${proxyPort} via '${APP}'...`);
+	const tunnel = spawn(...cfCommand(["ssh", APP, "-N", "-L", `127.0.0.1:${TUNNEL_PORT}:${proxyHost}:${proxyPort}`], { stdio: "inherit" }));
 	tunnel.on("exit", (code) => {
 		console.error(`[btp-proxy] ssh tunnel exited (${code})`);
 		process.exit(1);
@@ -168,7 +168,7 @@ async function main() {
 		delete primeHeaders["content-length"];
 		delete primeHeaders["transfer-encoding"];
 		const cookies = await new Promise((resolve, reject) => {
-			http.request({ host: "localhost", port: TUNNEL_PORT, method: "GET", path: url.href, headers: primeHeaders }, (up) => {
+			http.request({ host: "127.0.0.1", port: TUNNEL_PORT, method: "GET", path: url.href, headers: primeHeaders }, (up) => {
 				up.resume();
 				resolve((up.headers["set-cookie"] || []).map((c) => c.split(";")[0]).filter((c) => PRIME_COOKIES.includes(c.split("=")[0])));
 			}).on("error", reject).end();
@@ -211,7 +211,7 @@ async function main() {
 
 			// Plain HTTP request to the connectivity proxy with an absolute URL (HTTP proxy semantics)
 			const upstream = http.request({
-				host: "localhost",
+				host: "127.0.0.1",
 				port: TUNNEL_PORT,
 				method: req.method,
 				path: url.href,
@@ -236,7 +236,7 @@ async function main() {
 			res.writeHead(500);
 			res.end(`btp-proxy: ${err.message}`);
 		}
-	}).listen(PORT, () => console.log(`[btp-proxy] listening on http://localhost:${PORT}`));
+	}).listen(PORT, "127.0.0.1", () => console.log(`[btp-proxy] listening on http://127.0.0.1:${PORT}`));
 }
 
 main().catch((err) => {

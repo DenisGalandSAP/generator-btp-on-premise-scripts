@@ -185,11 +185,11 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, "5051");
 			assert.strictEqual(env.USR, "DEPLOYER");
 			assert.strictEqual(env.SAP_PWD, "p#ss 'x'");
-			assert.match(read("ui5-deploy-btp-dev.yaml"), /url: http:\/\/localhost:5051 # scripts\/btp-proxy.js -> BTP destination SYS_DEPLOY \(npm run deploy-btp:dev\)/);
+			assert.match(read("ui5-deploy-btp-dev.yaml"), /url: http:\/\/127.0.0.1:5051 # scripts\/btp-proxy.js -> BTP destination SYS_DEPLOY \(npm run deploy-btp:dev\)/);
 			assert.match(read("ui5-deploy-btp-dev.yaml"), /username: env:USR/);
 			assert.match(read("ui5-deploy-btp-dev.yaml"), /name: ZFIXTURE\n\s+package: ZFIXTURE/);
 			assert.doesNotMatch(read("ui5-deploy-btp-dev.yaml"), /destination:/);
-			assert.match(read("ui5-btp-dev.yaml"), /url: http:\/\/localhost:5050/);
+			assert.match(read("ui5-btp-dev.yaml"), /url: http:\/\/127.0.0.1:5050/);
 			assert.match(read("scripts/btp.js"), /BTP_DEPLOY_DESTINATION/);
 			assert.match(read("scripts/btp-env.js"), /ensureCfTarget/);
 			assert.match(read(".gitignore"), /^\.env$/m);
@@ -217,8 +217,8 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.deepStrictEqual([env.BTP_PROXY_PORT, env.BTP_TUNNEL_PORT, env.BTP_DEPLOY_PROXY_PORT, env.BTP_DEPLOY_TUNNEL_PORT], ["5052", "20005", "5053", "20006"]);
 			assert.strictEqual(env.USR, "QUSER");
 			assert.strictEqual(parseEnv(read(".env.dev")).USR, "DEPLOYER"); // dev untouched
-			assert.match(read("ui5-btp-qual.yaml"), /url: http:\/\/localhost:5052/);
-			assert.match(read("ui5-btp-dev.yaml"), /url: http:\/\/localhost:5050/);
+			assert.match(read("ui5-btp-qual.yaml"), /url: http:\/\/127.0.0.1:5052/);
+			assert.match(read("ui5-btp-dev.yaml"), /url: http:\/\/127.0.0.1:5050/);
 			const scripts = JSON.parse(read("package.json")).scripts;
 			assert.ok(scripts["start-btp:dev"] && scripts["start-btp:qual"]);
 			assert.deepStrictEqual(JSON.parse(read(".vscode/launch.json")).configurations.slice(0, 2).map((c) => c.command), ["npm run start-btp:qual", "npm run start-btp:dev"]);
@@ -232,7 +232,7 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.strictEqual(env.BTP_PROXY_PORT, "5050");
 			assert.strictEqual(env.BTP_DEPLOY_DESTINATION, undefined);
 			assert.throws(() => read("ui5-deploy-btp-dev.yaml"), /ENOENT/);
-			assert.match(read("ui5-deploy-btp-qual.yaml"), /localhost:5053/);
+			assert.match(read("ui5-deploy-btp-qual.yaml"), /127.0.0.1:5053/);
 		},
 		{ project }
 	);
@@ -241,7 +241,7 @@ api.cf.eu10-002.hana.ondemand.com
 		{ runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_RUNTIME", abapApp: "ZFIXTURE", abapPackage: "$TMP", abapTransport: "", abapClient: "300" },
 		(read, env) => {
 			assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, undefined);
-			assert.match(read("ui5-deploy-btp-dev.yaml"), /url: http:\/\/localhost:5050/);
+			assert.match(read("ui5-deploy-btp-dev.yaml"), /url: http:\/\/127.0.0.1:5050/);
 			assert.doesNotMatch(read("ui5-deploy-btp-dev.yaml"), /credentials:/);
 			assert.doesNotMatch(read("ui5-deploy-btp-dev.yaml"), /transport:/);
 		}

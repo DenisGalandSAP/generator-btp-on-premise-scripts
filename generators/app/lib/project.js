@@ -166,7 +166,7 @@ const BACKEND_KEYS_TO_DROP = ["destination", "destinationInstance", "client", "s
 function runtimeYaml(ui5Text, { port, destination, script = "start-btp" }) {
 	const doc = parseUi5Yaml(ui5Text);
 	const url = () => {
-		const node = doc.createNode(`http://localhost:${port}`);
+		const node = doc.createNode(`http://127.0.0.1:${port}`);
 		node.comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run ${script})`;
 		return node;
 	};
@@ -264,7 +264,7 @@ function deployYaml(root, { port, destination, client, app, pkg, transport, cred
 	const doc = parseUi5Yaml(deployText || read(path.join(root, "ui5.yaml")));
 	if (!deployText) doc.delete("server");
 
-	const target = doc.createNode({ url: `http://localhost:${port}`, ...(client ? { client: String(client) } : {}) });
+	const target = doc.createNode({ url: `http://127.0.0.1:${port}`, ...(client ? { client: String(client) } : {}) });
 	target.get("url", true).comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run ${script})`;
 	const appNode = { name: app, package: pkg, ...(transport ? { transport } : {}) };
 

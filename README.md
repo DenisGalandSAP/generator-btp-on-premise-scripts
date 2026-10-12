@@ -94,7 +94,7 @@ For an environment `<env>`:
 | File | Content |
 | --- | --- |
 | `scripts/btp-proxy.js`, `scripts/btp.js`, `scripts/btp-env.js` | the proxy, the start / deploy wrapper, and the environment loading and cf targeting, shared by all environments |
-| `ui5-btp-<env>.yaml` | `ui5.yaml` with every `fiori-tools-proxy` backend pointing at the environment's proxy (`http://localhost:5050` for the first) |
+| `ui5-btp-<env>.yaml` | `ui5.yaml` with every `fiori-tools-proxy` backend pointing at the environment's proxy (`http://127.0.0.1:5050` for the first) |
 | `ui5-deploy-btp-<env>.yaml` | `ui5-deploy.yaml` (or `ui5.yaml`) with the `deploy-to-abap` target on the deploy proxy, written only when there is a deploy destination |
 | `.env.<env>` | the `BTP_*` settings (`BTP_CF_API`, org, space, app, destinations, ports) and `USR` / `SAP_PWD`; other keys are kept. `.env` and `.env.<env>` are added to `.gitignore` |
 | `package.json` | the scripts `btp-proxy:<env>`, `start-btp:<env>`, `deploy-btp:<env>` and `deploy-btp-test:<env>` |
@@ -107,7 +107,7 @@ Start the app with `npm run start-btp:<env>` or the run configuration. `npm star
 Run / Preview still use `ui5.yaml`, whose destination only resolves in SAP Business Application Studio.
 
 When the runtime and deploy destinations differ, each gets its own proxy and tunnel; you can change their
-ports in `.env.<env>`. The scripts need Node.js 20.12 or later and the cf CLI, and no extra npm packages.
+ports in `.env.<env>`. The scripts need Node.js 22 or later and the cf CLI, and no extra npm packages.
 
 ## Install
 

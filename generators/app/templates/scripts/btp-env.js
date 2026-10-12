@@ -11,6 +11,11 @@ const { execFileSync, execSync, spawnSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const isWin = process.platform === "win32";
 
+if (Number(process.versions.node.split(".")[0]) < 22) {
+	console.error(`[btp] Node.js 22 or later is required, this is ${process.version}`);
+	process.exit(1);
+}
+
 // .env values never override variables already set in the environment
 function loadEnvFile(file) {
 	if (!fs.existsSync(file)) return;
