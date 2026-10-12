@@ -115,10 +115,24 @@ async function stopStale({ port, tunnelPort }) {
 }
 
 const children = [];
-function run(cmd, args, options) {
-	const child = spawn(cmd, args, { cwd: ROOT, shell: isWin, stdio: "inherit", ...options });
+// Windows needs a shell for npm / .cmd files; the command line is built here (spawn with shell + args is deprecated)
+const quote = (arg) => (/^[\w\-.\/\\:=@]+$/.test(arg) ? arg : `"${arg.replace(/"/g, '""')}"`);
+function run(cmd, args, options = {}) {
+	const shell = options.shell === undefined ? isWin : options.shell;
+	const child = shell
+		? spawn([cmd, ...args].map(quote).join(" "), { cwd: ROOT, stdio: "inherit", ...options, shell })
+		: spawn(cmd, args, { cwd: ROOT, stdio: "inherit", ...options, shell });
 	children.push(child);
 	return child;
+}
+
+// the project's own fiori CLI - npx would otherwise try to download a non-existent "fiori" package
+function fioriCli() {
+	const bin = path.join(ROOT, "node_modules", ".bin", isWin ? "fiori.cmd" : "fiori");
+	if (!fs.existsSync(bin)) {
+		throw new Error("the fiori CLI (@sap/ux-ui5-tooling) is not installed in this project - run 'npm install' first");
+	}
+	return bin;
 }
 
 function killTree(child) {
@@ -178,6 +192,7 @@ async function ensureProxy(config) {
 const exitWith = (child) => new Promise((resolve) => child.on("exit", (code) => resolve(code === null ? 1 : code)));
 
 async function main() {
+	const fiori = fioriCli();
 	await ensureProxy(proxyConfig);
 
 	if (mode === "start") {
@@ -188,17 +203,16 @@ async function main() {
 			const m = /--open\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(start);
 			if (m) open = m[1] || m[2] || m[3];
 		} catch (e) { /* keep the default */ }
-		const fiori = run("npx", ["fiori", "run", "--config", "./ui5-btp.yaml", "--open", isWin ? `"${open}"` : open]);
-		finish(await exitWith(fiori));
+		finish(await exitWith(run(fiori, ["run", "--config", "./ui5-btp.yaml", "--open", open])));
 		return;
 	}
 
 	// deploy - USR / SAP_PWD from .env reach fiori deploy through the inherited environment
 	const build = await exitWith(run("npm", ["run", "build"]));
 	if (build !== 0) return finish(build);
-	const deployArgs = ["fiori", "deploy", "-y", "--config", "ui5-deploy-btp.yaml"];
+	const deployArgs = ["deploy", "-y", "--config", "ui5-deploy-btp.yaml"];
 	if (flags.includes("--test")) deployArgs.push("--testMode", "true");
-	finish(await exitWith(run("npx", deployArgs)));
+	finish(await exitWith(run(fiori, deployArgs)));
 }
 
 main().catch((err) => {
