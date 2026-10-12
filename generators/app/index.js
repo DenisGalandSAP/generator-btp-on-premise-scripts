@@ -283,8 +283,17 @@ module.exports = class extends Generator {
 		return undefined;
 	}
 
+	// first name that is one of the available destinations
+	async _knownDestination(...names) {
+		const available = (await this._destinations()).map((d) => d.Name);
+		return names.find((n) => n && available.includes(n));
+	}
+
 	async _promptDestinations() {
 		const prev = this.existingEnv;
+		// destinations of the existing ui5.yaml / ui5-deploy.yaml, used when .env has none yet
+		const deployDest = project.deployDefaults(this.project.root).destination;
+		const runtimeDests = project.runtimeDestinations(this.project.root);
 		const describe = async (name, purpose) => {
 			const d = await this._destination(name);
 			if (!d) return "";
@@ -301,7 +310,7 @@ module.exports = class extends Generator {
 				name: "runtimeDestination",
 				message: "Runtime destination (npm run start-btp)",
 				choices: () => this._destinationChoices(),
-				default: prev.BTP_DESTINATION,
+				default: () => this._knownDestination(prev.BTP_DESTINATION, ...runtimeDests, deployDest),
 				guiOptions: { mandatory: true, hint: "OData / backend calls of the running app go through this destination" },
 				validate: validateDestination
 			},
@@ -311,7 +320,7 @@ module.exports = class extends Generator {
 				name: "deployDestination",
 				message: "Deploy destination (npm run deploy-btp)",
 				choices: () => this._destinationChoices(),
-				default: (a) => prev.BTP_DEPLOY_DESTINATION || a.runtimeDestination,
+				default: (a) => this._knownDestination(prev.BTP_DEPLOY_DESTINATION, deployDest, a.runtimeDestination),
 				guiOptions: { mandatory: true, hint: "The ABAP repository upload (/sap/opu/odata/UI5/ABAP_REPOSITORY_SRV) goes through this destination" },
 				validate: validateDestination
 			},
@@ -355,7 +364,8 @@ module.exports = class extends Generator {
 				type: "input",
 				name: "abapTransport",
 				message: "Transport request",
-				default: defaults.transport,
+				// an empty answer falls back to the default in the CLI - none for a local package
+				default: (a) => (/^\$/.test(a.abapPackage || "") ? undefined : defaults.transport),
 				guiOptions: { hint: "Leave empty for a local package ($TMP / $...)" },
 				validate: (v, a) => (v || /^\$/.test(a.abapPackage || "") ? true : "A transport request is required for a non-local package"),
 				filter: (v) => (v || "").trim().toUpperCase()
