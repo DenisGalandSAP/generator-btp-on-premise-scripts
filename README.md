@@ -42,7 +42,8 @@ If `cf enable-ssh` fails, SSH is disabled for the space: a Space Manager runs `c
 
 ## Wizard steps
 
-1. **Project** – the folder must contain `package.json`, `ui5.yaml` and `webapp/manifest.json`
+1. **Project** – a note reminds that a SAP system reachable directly from your environment needs none
+   of this: add it with the Service Center of SAP Fiori tools instead. The folder must contain `package.json`, `ui5.yaml` and `webapp/manifest.json`
    (SAPUI5 freestyle or SAP Fiori elements V2/V4).
 2. **Cloud Foundry Endpoint / Login** – only shown when the cf session is missing or expired.
    Pick the region from the list of SAP BTP Cloud Foundry regions (or enter another API endpoint).

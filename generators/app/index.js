@@ -22,6 +22,10 @@ const STEPS = {
 	deploy: { name: "Deployment", description: "ABAP repository target and logon for the deploy destination" }
 };
 
+const DIRECT_ACCESS_NOTE =
+	"Note: if the SAP system is reachable directly from your environment, you do not need this generator - " +
+	"add the system with the Service Center of SAP Fiori tools instead.";
+
 const OTHER_ENDPOINT = "other";
 
 const SUPPORTED_AUTH = ["NoAuthentication", "BasicAuthentication"];
@@ -66,7 +70,9 @@ module.exports = class extends Generator {
 	}
 
 	async _promptProject() {
+		if (!this.isGui) this.log(DIRECT_ACCESS_NOTE);
 		const answers = await this.prompt([
+			this._label("directAccessNote", DIRECT_ACCESS_NOTE),
 			{
 				type: "input",
 				name: "projectPath",
