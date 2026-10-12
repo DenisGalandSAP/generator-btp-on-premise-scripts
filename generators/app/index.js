@@ -17,7 +17,7 @@ const STEPS = {
 	project: { name: "Project", description: "SAPUI5 or SAP Fiori elements project to add the BTP destination scripts to" },
 	endpoint: { name: "Cloud Foundry Endpoint", description: "You are not logged in to Cloud Foundry (or the session expired) - select the region of the subaccount" },
 	login: { name: "Cloud Foundry Login", description: "Log on to the Cloud Foundry environment of the subaccount" },
-	target: { name: "Cloud Foundry Target", description: "Org, space and the app bound to the destination and connectivity services" },
+	target: { name: "Cloud Foundry Target", description: "Org and space of the CF app the local proxy tunnels through (bound to the destination and connectivity services, SSH enabled) - picked automatically when there is only one, created when there is none" },
 	destinations: { name: "Destinations", description: "Destination used to run the app and destination used to deploy it" },
 	deploy: { name: "Deployment", description: "ABAP repository target and logon for the deploy destination" }
 };
@@ -239,7 +239,7 @@ module.exports = class extends Generator {
 
 	async _validateApp(name, a) {
 		const apps = await this._apps(a.org, a.space);
-		if (!apps.length) return `No app in ${a.org}/${a.space} is bound to both a destination and a connectivity service instance`;
+		if (!apps.length) return `No app in ${a.org}/${a.space} is bound to both a destination and a connectivity service instance - let the generator create one, or see 'First-time setup' in the README`;
 		const app = apps.find((x) => x.name === name);
 		if (!app) return "Select an app";
 		const ssh = await cf.sshEnabled(app.guid);
@@ -278,17 +278,42 @@ module.exports = class extends Generator {
 				message: "App bound to the destination and connectivity services",
 				choices: async (a) => (a.org && a.space ? (await this._apps(a.org, a.space)).map((x) => x.name) : []),
 				default: prev.BTP_APP,
+				// only ask when there is a choice - a single bound app is picked automatically, none is created (below)
+				when: async (a) => !!a.org && !!a.space && (await this._apps(a.org, a.space)).length > 1,
 				guiOptions: {
 					mandatory: true,
 					hint: "The local proxy reads the service keys from this app's environment and opens 'cf ssh' through it to the connectivity proxy"
 				},
 				validate: (name, a) => this._validateApp(name, a)
+			},
+			{
+				type: "confirm",
+				name: "createTunnel",
+				message: (a) =>
+					`No app in ${a.org}/${a.space} is bound to a destination and a connectivity service yet. ` +
+					`Create the app '${cf.TUNNEL.app}' for the tunnel (64 MB, binds or creates the '${cf.TUNNEL.destination}' and '${cf.TUNNEL.connectivity}' instances)?`,
+				default: true,
+				when: async (a) => !!a.org && !!a.space && !(await this._apps(a.org, a.space)).length,
+				guiOptions: {
+					hint: "Needs the entitlements Destination (lite), Connectivity (lite) and Cloud Foundry Runtime memory - see 'First-time setup' in the README to do it by hand"
+				},
+				validate: (create) => create || "The proxy needs such an app - select another space, or set it up by hand (README, 'First-time setup')"
 			}
 		]);
+		const apps = await this._apps(answers.org, answers.space);
+		if (!apps.length && answers.createTunnel) {
+			const space = (await this._spaces(answers.org)).find((s) => s.name === answers.space);
+			this.log(`Creating the tunnel app in ${answers.org}/${answers.space} - this takes a minute or two`);
+			answers.app = await cf.createTunnelApp(answers.org, answers.space, space.guid, (msg) => this.log(msg));
+			this.cache.apps.delete(space.guid);
+		} else if (!answers.app && apps.length === 1) {
+			answers.app = apps[0].name;
+		}
 		// the yo CLI does not validate list answers
 		await this._check(this._validateApp(answers.app, answers));
 		Object.assign(this.answers, answers);
 		this.app = (await this._apps(answers.org, answers.space)).find((x) => x.name === answers.app);
+		if (!this.isGui) this.log(`Using app '${this.app.name}' for the tunnel to the connectivity proxy`);
 	}
 
 	/* ---------- 4. destinations ---------- */

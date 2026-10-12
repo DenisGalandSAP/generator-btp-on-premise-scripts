@@ -123,18 +123,24 @@ async function spaces(orgGuid) {
 	return resources.map((s) => ({ name: s.name, guid: s.guid }));
 }
 
-/** Apps of a space bound to both a destination and a connectivity service instance. */
-async function boundApps(spaceGuid) {
+/** Destination and connectivity service instances of a space: guid -> { name, offering }. */
+async function serviceInstances(spaceGuid) {
 	const { resources: offerings } = await curlAll(`/v3/service_offerings?names=destination,connectivity&space_guids=${spaceGuid}&per_page=200`);
-	if (!offerings.length) return [];
+	if (!offerings.length) return new Map();
 	const offeringName = new Map(offerings.map((o) => [o.guid, o.name]));
 
 	const { resources: plans } = await curlAll(`/v3/service_plans?service_offering_guids=${[...offeringName.keys()].join(",")}&per_page=200`);
 	const planOffering = new Map(plans.map((p) => [p.guid, offeringName.get(p.relationships.service_offering.data.guid)]));
-	if (!planOffering.size) return [];
+	if (!planOffering.size) return new Map();
 
 	const { resources: instances } = await curlAll(`/v3/service_instances?space_guids=${spaceGuid}&service_plan_guids=${[...planOffering.keys()].join(",")}&per_page=200`);
-	const instanceOffering = new Map(instances.map((i) => [i.guid, planOffering.get(i.relationships.service_plan.data.guid)]));
+	return new Map(instances.map((i) => [i.guid, { name: i.name, offering: planOffering.get(i.relationships.service_plan.data.guid) }]));
+}
+
+/** Apps of a space bound to both a destination and a connectivity service instance. */
+async function boundApps(spaceGuid) {
+	const instances = await serviceInstances(spaceGuid);
+	const instanceOffering = new Map([...instances].map(([guid, i]) => [guid, i.offering]));
 	if (!instanceOffering.size) return [];
 
 	const { resources: bindings, included } = await curlAll(
@@ -194,4 +200,78 @@ async function target(org, space) {
 	await cf(["target", "-o", org, "-s", space]);
 }
 
-module.exports = { loginStatus, loginUrl, loginWithPasscode, loginWithPassword, orgs, spaces, boundApps, sshEnabled, destinations, target };
+/* ---------- tunnel app for a space that has none ---------- */
+
+const TUNNEL = { app: "btp-tunnel", destination: "btp-destination", connectivity: "btp-connectivity", plan: "lite" };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// some brokers provision asynchronously - binding fails while the instance is still "in progress"
+async function waitForInstance(name, timeout = 180000) {
+	const guid = await cf(["service", name, "--guid"]);
+	for (const end = Date.now() + timeout; ;) {
+		const op = (await curl(`/v3/service_instances/${guid}`)).last_operation || {};
+		if (op.state === "failed") throw new Error(`Creating the service instance '${name}' failed: ${op.description || "no details"}`);
+		if (op.state !== "in progress") return;
+		if (Date.now() > end) throw new Error(`The service instance '${name}' is still being created - run the generator again in a few minutes`);
+		await sleep(3000);
+	}
+}
+
+/** Reuses a destination / connectivity instance of the space, else creates one with the lite plan. */
+async function ensureInstance(existing, offering, name, log) {
+	const found = [...existing.values()].filter((i) => i.offering === offering).map((i) => i.name);
+	if (found.length) {
+		const reused = found.includes(name) ? name : found[0];
+		log(`Using the existing ${offering} service instance '${reused}'`);
+		return reused;
+	}
+	log(`Creating the ${offering} service instance '${name}' (plan ${TUNNEL.plan})`);
+	try {
+		await cf(["create-service", offering, TUNNEL.plan, name], { timeout: 300000 });
+	} catch (e) {
+		throw new Error(
+			`Could not create the ${offering} service instance: ${e.message} - assign the '${offering}' entitlement with plan '${TUNNEL.plan}' ` +
+			"to the subaccount (BTP cockpit > Entitlements) or ask your subaccount administrator"
+		);
+	}
+	await waitForInstance(name);
+	return name;
+}
+
+/**
+ * Creates (or completes) the "btp-tunnel" app: a 64 MB process that only sleeps, bound to a destination and a
+ * connectivity instance, with SSH enabled - everything the local proxy needs. Safe to run again after a failure.
+ */
+async function createTunnelApp(org, space, spaceGuid, log = () => {}) {
+	await target(org, space);
+	const existing = await serviceInstances(spaceGuid);
+	const destination = await ensureInstance(existing, "destination", TUNNEL.destination, log);
+	const connectivity = await ensureInstance(existing, "connectivity", TUNNEL.connectivity, log);
+
+	log(`Pushing the app '${TUNNEL.app}' (binary buildpack, 64 MB, no route)`);
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "btp-tunnel-"));
+	fs.writeFileSync(path.join(dir, "README.txt"), "SSH tunnel app for @scodigis/generator-btp-on-premise-scripts - it only runs 'sleep infinity'.\n");
+	try {
+		// --no-manifest: never pick up a manifest.yml of the current folder
+		await cf(
+			["push", TUNNEL.app, "-p", dir, "--no-manifest", "--no-start", "--no-route", "-b", "binary_buildpack", "-m", "64M", "-k", "256M", "-u", "process", "-c", "sleep infinity"],
+			{ timeout: 600000 }
+		);
+	} catch (e) {
+		throw new Error(`Could not push the app '${TUNNEL.app}': ${e.message} - the subaccount needs Cloud Foundry Runtime memory quota (64 MB) for the space`);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+	log(`Binding '${destination}' and '${connectivity}', enabling SSH and starting '${TUNNEL.app}'`);
+	await cf(["bind-service", TUNNEL.app, destination], { timeout: 180000 });
+	await cf(["bind-service", TUNNEL.app, connectivity], { timeout: 180000 });
+	try {
+		await cf(["enable-ssh", TUNNEL.app]);
+	} catch (e) {
+		throw new Error(`Could not enable SSH for '${TUNNEL.app}': ${e.message} - SSH may be disabled for the space (cf allow-space-ssh ${space}, needs the Space Manager role)`);
+	}
+	await cf(["restart", TUNNEL.app], { timeout: 600000 });
+	return TUNNEL.app;
+}
+
+module.exports = { loginStatus, loginUrl, loginWithPasscode, loginWithPassword, orgs, spaces, boundApps, sshEnabled, destinations, target, createTunnelApp, TUNNEL };

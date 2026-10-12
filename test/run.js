@@ -30,6 +30,8 @@ const DESTINATIONS = [
 ];
 // set loggedOut to start a scenario without a cf session; loginWithPasscode records its arguments
 const session = { loggedOut: false, logins: [] };
+// apps bound in the space; createTunnelApp records its arguments and "creates" btp-tunnel
+const space = { apps: [{ name: "my-srv", guid: "a1" }], created: [] };
 Object.assign(cf, {
 	loginStatus: async () =>
 		session.loggedOut
@@ -42,7 +44,12 @@ Object.assign(cf, {
 	},
 	orgs: async () => [{ name: "my-org", guid: "o1" }],
 	spaces: async () => [{ name: "dev", guid: "s1" }],
-	boundApps: async () => [{ name: "my-srv", guid: "a1" }],
+	boundApps: async () => space.apps,
+	createTunnelApp: async (org, spaceName, spaceGuid) => {
+		space.created.push([org, spaceName, spaceGuid]);
+		space.apps = [{ name: cf.TUNNEL.app, guid: "t1" }];
+		return cf.TUNNEL.app;
+	},
 	sshEnabled: async () => ({ enabled: true }),
 	destinations: async () => DESTINATIONS,
 	target: async () => {}
@@ -157,6 +164,7 @@ api.cf.eu10-002.hana.ondemand.com
 		{ runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_DEPLOY", abapApp: "zfixture", abapPackage: "zfixture", abapTransport: "SYSK900001", abapClient: "100", deployUser: "DEPLOYER", deployPassword: "p#ss 'x'" },
 		(read, env) => {
 			assert.strictEqual(env.BTP_DESTINATION, "SYS_RUNTIME");
+			assert.strictEqual(env.BTP_APP, "my-srv"); // the only bound app, picked without a question
 			assert.strictEqual(env.BTP_DEPLOY_DESTINATION, "SYS_DEPLOY");
 			assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, "5051");
 			assert.strictEqual(env.USR, "DEPLOYER");
@@ -196,6 +204,22 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.strictEqual(env.BTP_DESTINATION, "SYS_RUNTIME");
 		}
 	);
+	space.apps = [{ name: "other-srv", guid: "a0" }, { name: "my-srv", guid: "a1" }];
+	await scenario(
+		"several bound apps, one selected",
+		{ app: "my-srv", runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_RUNTIME", abapApp: "ZFIXTURE", abapPackage: "$TMP", abapTransport: "", abapClient: "300" },
+		(read, env) => assert.strictEqual(env.BTP_APP, "my-srv")
+	);
+	space.apps = [];
+	await scenario(
+		"no bound app, tunnel app created",
+		{ createTunnel: true, runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_RUNTIME", abapApp: "ZFIXTURE", abapPackage: "$TMP", abapTransport: "", abapClient: "300" },
+		(read, env) => {
+			assert.deepStrictEqual(space.created, [["my-org", "dev", "s1"]]);
+			assert.strictEqual(env.BTP_APP, "btp-tunnel");
+		}
+	);
+	space.apps = [{ name: "my-srv", guid: "a1" }];
 	if (isFixture) {
 		await scenario(
 			"defaults taken from the existing ui5.yaml / ui5-deploy.yaml",

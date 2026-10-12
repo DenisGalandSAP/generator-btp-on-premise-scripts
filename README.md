@@ -8,6 +8,38 @@ connectivity service keys from a Cloud Foundry app's environment, opens `cf ssh 
 proxy, and forwards each request with the connectivity token, the Cloud Connector location id, the
 `sap-client` and the destination's logon.
 
+## First-time setup
+
+Done once per subaccount / space, then shared by everyone using the scripts.
+
+**In the BTP cockpit** (subaccount administrator):
+
+- Entitlements assigned to the subaccount: **Destination** (plan `lite`), **Connectivity** (plan `lite`)
+  and **Cloud Foundry Runtime** (64 MB of memory is enough).
+- The Cloud Connector is connected to the subaccount and exposes the backend system.
+- The OnPremise destinations are defined at subaccount level (Connectivity > Destinations).
+
+**In the Cloud Foundry space**, an app the proxy tunnels through. The wizard creates it for you when
+the space has none – or do it by hand:
+
+```sh
+cf target -o <org> -s <space>
+cf create-service destination lite btp-destination
+cf create-service connectivity lite btp-connectivity
+
+# a 64 MB app that only sleeps - any folder works, the content is not used
+mkdir btp-tunnel && cd btp-tunnel && echo > README.txt
+cf push btp-tunnel --no-manifest --no-start --no-route -b binary_buildpack -m 64M -k 256M -u process -c "sleep infinity"
+
+cf bind-service btp-tunnel btp-destination
+cf bind-service btp-tunnel btp-connectivity
+cf enable-ssh btp-tunnel
+cf restart btp-tunnel
+```
+
+Existing destination / connectivity instances of the space can be bound instead of creating new ones.
+If `cf enable-ssh` fails, SSH is disabled for the space: a Space Manager runs `cf allow-space-ssh <space>`.
+
 ## Wizard steps
 
 1. **Project** – the folder must contain `package.json`, `ui5.yaml` and `webapp/manifest.json`
@@ -19,7 +51,9 @@ proxy, and forwards each request with the connectivity token, the Cloud Connecto
    on GitHub, with a built-in copy when it cannot be reached. Then log in with an SSO passcode (the wizard links to the passcode page) or user + password with
    an optional identity provider origin.
 3. **Cloud Foundry Target** – org, space and an app bound to a *destination* **and** a *connectivity*
-   service instance. SSH must be enabled for the app.
+   service instance. SSH must be enabled for the app. When the space has exactly one such app it is
+   picked without a question. When it has none, the wizard offers to create `btp-tunnel` (see
+   [First-time setup](#first-time-setup)).
 4. **Destinations** – runtime destination (`npm run start-btp`) and deploy destination (`npm run deploy-btp`).
    Only OnPremise HTTP destinations with `NoAuthentication` or `BasicAuthentication` work.
    Prefilled from `.env`, else from the `destination` in `ui5.yaml` / `ui5-deploy.yaml` when the
