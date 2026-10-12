@@ -12,8 +12,12 @@ proxy, and forwards each request with the connectivity token, the Cloud Connecto
 
 1. **Project** – the folder must contain `package.json`, `ui5.yaml` and `webapp/manifest.json`
    (SAPUI5 freestyle or SAP Fiori elements V2/V4).
-2. **Cloud Foundry Login** – only shown when the cf session is missing or expired
-   (SSO passcode, or user + password with an optional identity provider origin).
+2. **Cloud Foundry Endpoint / Login** – only shown when the cf session is missing or expired.
+   Pick the region from the list of SAP BTP Cloud Foundry regions (or enter another API endpoint).
+   SAP has no public API for the regions, so the list is read from the source of the SAP Help page
+   [Regions and API Endpoints Available for the Cloud Foundry Environment](https://help.sap.com/docs/btp/sap-business-technology-platform/regions-and-api-endpoints-available-for-cloud-foundry-environment)
+   on GitHub, with a built-in copy when it cannot be reached. Then log in with an SSO passcode (the wizard links to the passcode page) or user + password with
+   an optional identity provider origin.
 3. **Cloud Foundry Target** – org, space and an app bound to a *destination* **and** a *connectivity*
    service instance. SSH must be enabled for the app.
 4. **Destinations** – runtime destination (`npm run start-btp`) and deploy destination (`npm run deploy-btp`).

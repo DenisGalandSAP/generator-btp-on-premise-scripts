@@ -28,8 +28,18 @@ const DESTINATIONS = [
 	{ Name: "MYSYS", Type: "HTTP", ProxyType: "OnPremise", URL: "http://mysys:443", Authentication: "BasicAuthentication", User: "TECH", level: "subaccount" },
 	{ Name: "INTERNET", Type: "HTTP", ProxyType: "Internet", URL: "https://example.org", Authentication: "NoAuthentication", level: "subaccount" }
 ];
+// set loggedOut to start a scenario without a cf session; loginWithPasscode records its arguments
+const session = { loggedOut: false, logins: [] };
 Object.assign(cf, {
-	loginStatus: async () => ({ loggedIn: true, api: "https://api.cf.eu10.hana.ondemand.com", org: "my-org", space: "dev", user: "tester" }),
+	loginStatus: async () =>
+		session.loggedOut
+			? { loggedIn: false, api: "https://api.cf.eu10.hana.ondemand.com", error: "token expired" }
+			: { loggedIn: true, api: "https://api.cf.eu10.hana.ondemand.com", org: "my-org", space: "dev", user: "tester" },
+	loginUrl: async (api) => api.replace("://api.", "://login."),
+	loginWithPasscode: async (api, passcode) => {
+		session.logins.push([api, passcode]);
+		session.loggedOut = false;
+	},
 	orgs: async () => [{ name: "my-org", guid: "o1" }],
 	spaces: async () => [{ name: "dev", guid: "s1" }],
 	boundApps: async () => [{ name: "my-srv", guid: "a1" }],
@@ -93,8 +103,54 @@ function existingConfiguration() {
 	console.log("OK existing ui5.yaml / ui5-deploy.yaml read");
 }
 
+async function regionList() {
+	const regions = require("../generators/app/lib/regions");
+	const page = `| other | table |
+<table>
+<tr><th valign="top">IaaS Provider</th><th>Region</th><th>Region Name</th><th>API Endpoint</th></tr>
+<tr><td>
+
+Amazon Web Services
+
+</td><td>eu10</td><td>Europe \\(Frankfurt\\)</td><td>
+
+**cf-eu10:**
+
+api.cf.eu10.hana.ondemand.com
+
+**cf-eu10-002:**
+
+api.cf.eu10-002.hana.ondemand.com
+
+</td></tr>
+<tr><td>Microsoft Azure</td><td>cn20</td><td>China \\(North 3\\)</td><td>api.cf.cn20.platform.sapcloud.cn</td></tr>
+</table>
+<table>
+<tr><th>IaaS Provider</th><th>Region Name</th><th>API Endpoint</th></tr>
+<tr><td>Amazon Web Services</td><td>US East \\(VA\\)</td><td>api.cf.eu10.hana.ondemand.com</td></tr>
+</table>`;
+	assert.deepStrictEqual(regions.parse(page), [
+		{ key: "eu10", api: "https://api.cf.eu10.hana.ondemand.com", location: "Europe (Frankfurt)", provider: "AWS" },
+		{ key: "eu10-002", api: "https://api.cf.eu10-002.hana.ondemand.com", location: "Europe (Frankfurt)", provider: "AWS" },
+		{ key: "cn20", api: "https://api.cf.cn20.platform.sapcloud.cn", location: "China (North 3)", provider: "Azure" }
+	]);
+	const realFetch = global.fetch;
+	global.fetch = async () => {
+		throw new Error("offline");
+	};
+	try {
+		const offline = await regions.list();
+		assert.strictEqual(offline.source, "built-in");
+		assert.ok(offline.regions.some((r) => r.api === "https://api.cf.eu10-004.hana.ondemand.com"));
+	} finally {
+		global.fetch = realFetch;
+	}
+	console.log("OK region list");
+}
+
 (async () => {
 	launchJsonMerge();
+	await regionList();
 	existingConfiguration();
 	await scenario(
 		"different destinations, deploy without authentication",
@@ -129,6 +185,15 @@ function existingConfiguration() {
 			assert.match(read("ui5-deploy-btp.yaml"), /url: http:\/\/localhost:5050/);
 			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /credentials:/);
 			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /transport:/);
+		}
+	);
+	session.loggedOut = true;
+	await scenario(
+		"expired cf session, region and passcode",
+		{ cfRegion: "https://api.cf.eu20.hana.ondemand.com", cfLoginMethod: "sso", cfPasscode: " abc123 ", runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_RUNTIME", abapApp: "ZFIXTURE", abapPackage: "$TMP", abapTransport: "", abapClient: "300" },
+		(read, env) => {
+			assert.deepStrictEqual(session.logins, [["https://api.cf.eu20.hana.ondemand.com", "abc123"]]);
+			assert.strictEqual(env.BTP_DESTINATION, "SYS_RUNTIME");
 		}
 	);
 	if (isFixture) {
