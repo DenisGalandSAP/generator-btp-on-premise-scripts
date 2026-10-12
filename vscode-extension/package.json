@@ -2,7 +2,7 @@
   "name": "btp-on-premise-access",
   "displayName": "BTP On-Premise Access",
   "description": "Command Palette entry that opens the BTP On-Premise Access generator (@scodigis/generator-btp-on-premise-scripts) in the Template Wizard.",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "publisher": "scodigis",
   "license": "MIT",
   "repository": {
