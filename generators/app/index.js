@@ -3,7 +3,7 @@
  * Adds scripts/btp-proxy.js + scripts/btp.js to a SAPUI5 / SAP Fiori elements project so it can run and
  * deploy through on-premise BTP destinations (cf ssh tunnel to the connectivity proxy of a CF app).
  *
- * Steps: project -> Cloud Foundry login (only when needed) -> org / space / app -> runtime + deploy
+ * Steps: project -> Cloud Foundry endpoint + login (only when needed) -> org / space / app -> runtime + deploy
  * destination -> deploy target and credentials (when the deploy destination has no authentication).
  */
 const Generator = require("yeoman-generator");
@@ -14,11 +14,47 @@ const cf = require("./lib/cf");
 
 const STEPS = {
 	project: { name: "Project", description: "SAPUI5 or SAP Fiori elements project to add the BTP destination scripts to" },
-	login: { name: "Cloud Foundry Login", description: "You are not logged in to Cloud Foundry (or the session expired)" },
+	endpoint: { name: "Cloud Foundry Endpoint", description: "You are not logged in to Cloud Foundry (or the session expired) - select the region of the subaccount" },
+	login: { name: "Cloud Foundry Login", description: "Log on to the Cloud Foundry environment of the subaccount" },
 	target: { name: "Cloud Foundry Target", description: "Org, space and the app bound to the destination and connectivity services" },
 	destinations: { name: "Destinations", description: "Destination used to run the app and destination used to deploy it" },
 	deploy: { name: "Deployment", description: "ABAP repository target and logon for the deploy destination" }
 };
+
+// SAP BTP Cloud Foundry regions, as offered by the Cloud Connector when adding a subaccount
+const CF_REGIONS = [
+	["eu10", "Europe (Frankfurt) - AWS"],
+	["eu10-002", "Europe (Frankfurt) - AWS"],
+	["eu10-003", "Europe (Frankfurt) - AWS"],
+	["eu10-004", "Europe (Frankfurt) - AWS"],
+	["eu10-005", "Europe (Frankfurt) - AWS"],
+	["eu11", "Europe (Frankfurt) EU Access - AWS"],
+	["eu20", "Europe (Netherlands) - Azure"],
+	["eu20-001", "Europe (Netherlands) - Azure"],
+	["eu20-002", "Europe (Netherlands) - Azure"],
+	["eu30", "Europe (Frankfurt) - Google Cloud"],
+	["ch20", "Switzerland (Zurich) - Azure"],
+	["us10", "US East (VA) - AWS"],
+	["us10-001", "US East (VA) - AWS"],
+	["us10-002", "US East (VA) - AWS"],
+	["us11", "US West (Oregon) - AWS"],
+	["us20", "US West (WA) - Azure"],
+	["us21", "US East (VA) - Azure"],
+	["us30", "US Central (IA) - Google Cloud"],
+	["ca10", "Canada (Montreal) - AWS"],
+	["br10", "Brazil (Sao Paulo) - AWS"],
+	["jp10", "Japan (Tokyo) - AWS"],
+	["jp20", "Japan (Tokyo) - Azure"],
+	["ap10", "Australia (Sydney) - AWS"],
+	["ap11", "Singapore - AWS"],
+	["ap12", "South Korea (Seoul) - AWS"],
+	["ap20", "Australia (Sydney) - Azure"],
+	["ap21", "Singapore - Azure"],
+	["in30", "India (Mumbai) - Google Cloud"],
+	["il30", "Israel (Tel Aviv) - Google Cloud"],
+	["sa30", "Saudi Arabia (Dammam) - Google Cloud"]
+].map(([region, location]) => ({ api: `https://api.cf.${region}.hana.ondemand.com`, name: `${region}  -  ${location}` }));
+const OTHER_ENDPOINT = "other";
 
 const SUPPORTED_AUTH = ["NoAuthentication", "BasicAuthentication"];
 const RUNTIME_PORTS = { proxy: 5050, tunnel: 20003 };
@@ -44,7 +80,7 @@ module.exports = class extends Generator {
 
 	async initializing() {
 		this.cfStatus = await cf.loginStatus().catch((e) => ({ loggedIn: false, error: e.message }));
-		if (!this.cfStatus.loggedIn) this.prompts.splice(1, 0, [STEPS.login]);
+		if (!this.cfStatus.loggedIn) this.prompts.splice(1, 0, [STEPS.endpoint, STEPS.login]);
 	}
 
 	_label(name, message, when) {
@@ -89,38 +125,34 @@ module.exports = class extends Generator {
 
 	/* ---------- 2. login ---------- */
 
+	_endpointChoices() {
+		const current = (this.cfStatus.api || "").replace(/\/+$/, "");
+		const choices = CF_REGIONS.map((r) => ({ name: `${r.name}  (${r.api})`, value: r.api }));
+		if (current && !CF_REGIONS.some((r) => r.api === current)) choices.unshift({ name: `${current}  (current cf target)`, value: current });
+		choices.push({ name: "Other - enter the API endpoint", value: OTHER_ENDPOINT });
+		return choices;
+	}
+
 	async _promptLogin() {
-		const loginError = (e) => `Login failed: ${e.message}`;
-		// validate runs again on "Next" - a passcode is single-use, so never log in twice with the same input
-		let loggedInWith;
-		const login = async (key, doLogin) => {
-			if (loggedInWith === key && this.cfStatus.loggedIn) return true;
-			try {
-				await doLogin();
-			} catch (e) {
-				return loginError(e);
-			}
-			this.cfStatus = await cf.loginStatus();
-			if (!this.cfStatus.loggedIn) return `Login did not succeed: ${this.cfStatus.error || "unknown error"}`;
-			loggedInWith = key;
-			return true;
-		};
-		const loginUrls = new Map();
-		const passcodeUrl = async (api) => {
-			if (!loginUrls.has(api)) loginUrls.set(api, await cf.loginUrl(api));
-			return `${loginUrls.get(api)}/passcode`;
-		};
-		await this.prompt([
+		const endpoint = await this.prompt([
 			this._label("loginInfo", () =>
 				this.cfStatus.api
 					? `The Cloud Foundry session for ${this.cfStatus.api} is not valid anymore${this.cfStatus.error ? ` (${this.cfStatus.error})` : ""}.`
 					: "The cf CLI has no API endpoint yet."),
 			{
+				type: "list",
+				name: "cfRegion",
+				message: "Region (API endpoint)",
+				choices: () => this._endpointChoices(),
+				default: (this.cfStatus.api || "").replace(/\/+$/, "") || CF_REGIONS[0].api,
+				guiOptions: { mandatory: true, hint: "Cloud Foundry API endpoint of the subaccount, see the subaccount overview in the BTP cockpit" }
+			},
+			{
 				type: "input",
 				name: "cfApi",
 				message: "API endpoint",
-				default: this.cfStatus.api || "https://api.cf.eu10.hana.ondemand.com",
-				guiOptions: { mandatory: true, hint: "Cloud Foundry API URL of the subaccount, see the subaccount overview in the BTP cockpit" },
+				when: (a) => a.cfRegion === OTHER_ENDPOINT,
+				guiOptions: { mandatory: true, hint: "e.g. https://api.cf.eu10.hana.ondemand.com" },
 				validate: (v) => (/^https:\/\/\S+$/.test(v || "") ? true : "Enter an https:// URL")
 			},
 			{
@@ -132,23 +164,53 @@ module.exports = class extends Generator {
 					{ name: "User and password", value: "password" }
 				],
 				default: "sso"
-			},
+			}
+		]);
+		const api = (endpoint.cfRegion === OTHER_ENDPOINT ? endpoint.cfApi : endpoint.cfRegion).trim().replace(/\/+$/, "");
+		if (!/^https:\/\/\S+$/.test(api)) throw new Error(`Invalid API endpoint: ${api}`);
+		const sso = endpoint.cfLoginMethod === "sso";
+		const passcodeUrl = sso ? `${await cf.loginUrl(api)}/passcode` : undefined;
+
+		// validate runs again on "Next" - a passcode is single-use, so never log in twice with the same input
+		let loggedInWith;
+		const login = async (key, doLogin) => {
+			if (loggedInWith === key && this.cfStatus.loggedIn) return true;
+			try {
+				await doLogin();
+			} catch (e) {
+				return `Login failed: ${e.message}`;
+			}
+			this.cfStatus = await cf.loginStatus();
+			if (!this.cfStatus.loggedIn) return `Login did not succeed: ${this.cfStatus.error || "unknown error"}`;
+			loggedInWith = key;
+			return true;
+		};
+		const loginWith = (a) =>
+			sso
+				? login(`sso|${api}|${a.cfPasscode}`, () => cf.loginWithPasscode(api, a.cfPasscode.trim()))
+				: login(`pwd|${api}|${a.cfUser}|${a.cfOrigin}|${a.cfPassword}`, () =>
+					cf.loginWithPassword(api, a.cfUser.trim(), a.cfPassword, (a.cfOrigin || "").trim()));
+		const credentials = await this.prompt([
+			this._label("loginEndpoint", () => `Logging in to ${api}`),
 			{
 				type: "password",
 				name: "cfPasscode",
-				message: async (a) => `Temporary authentication code - open ${await passcodeUrl(a.cfApi)} to get one`,
-				when: (a) => a.cfLoginMethod === "sso",
-				guiOptions: { mandatory: true, type: "login" },
-				validate: async (code, a) => {
-					if (!code) return "Enter the passcode";
-					return login(`sso|${a.cfApi}|${code}`, () => cf.loginWithPasscode(a.cfApi, code.trim()));
-				}
+				// the wizard shows a link next to the label, the CLI needs the URL in the text
+				message: this.isGui ? "Temporary authentication code" : `Temporary authentication code - open ${passcodeUrl} to get one`,
+				when: () => sso,
+				guiOptions: {
+					mandatory: true,
+					type: "login",
+					link: { text: "Get a passcode", url: passcodeUrl },
+					hint: `Log on at ${passcodeUrl} and paste the code shown there`
+				},
+				validate: async (code) => (code ? loginWith({ cfPasscode: code }) : "Enter the passcode")
 			},
 			{
 				type: "input",
 				name: "cfUser",
 				message: "User (e-mail)",
-				when: (a) => a.cfLoginMethod === "password",
+				when: () => !sso,
 				guiOptions: { mandatory: true },
 				validate: required("User")
 			},
@@ -156,24 +218,24 @@ module.exports = class extends Generator {
 				type: "input",
 				name: "cfOrigin",
 				message: "Identity provider origin (optional)",
-				when: (a) => a.cfLoginMethod === "password",
+				when: () => !sso,
 				guiOptions: { hint: "Only for a custom identity provider (cf auth --origin), e.g. 'sap.custom' - leave empty for the SAP ID service" }
 			},
 			{
 				type: "password",
 				name: "cfPassword",
 				message: "Password",
-				when: (a) => a.cfLoginMethod === "password",
+				when: () => !sso,
 				guiOptions: { mandatory: true, type: "login" },
 				validate: async (password, a) => {
 					if (!password) return "Enter the password";
 					if (!a.cfUser) return "Enter the user first";
-					return login(`pwd|${a.cfApi}|${a.cfUser}|${a.cfOrigin}|${password}`, () =>
-						cf.loginWithPassword(a.cfApi, a.cfUser.trim(), password, (a.cfOrigin || "").trim()));
+					return loginWith({ ...a, cfPassword: password });
 				}
 			}
 		]);
-		if (!this.cfStatus.loggedIn) throw new Error("Not logged in to Cloud Foundry");
+		// not every prompt implementation runs validate
+		if (!this.cfStatus.loggedIn) await this._check(loginWith(credentials));
 	}
 
 	/* ---------- 3. org / space / app ---------- */

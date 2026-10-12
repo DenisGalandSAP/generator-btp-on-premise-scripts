@@ -28,8 +28,18 @@ const DESTINATIONS = [
 	{ Name: "MYSYS", Type: "HTTP", ProxyType: "OnPremise", URL: "http://mysys:443", Authentication: "BasicAuthentication", User: "TECH", level: "subaccount" },
 	{ Name: "INTERNET", Type: "HTTP", ProxyType: "Internet", URL: "https://example.org", Authentication: "NoAuthentication", level: "subaccount" }
 ];
+// set loggedOut to start a scenario without a cf session; loginWithPasscode records its arguments
+const session = { loggedOut: false, logins: [] };
 Object.assign(cf, {
-	loginStatus: async () => ({ loggedIn: true, api: "https://api.cf.eu10.hana.ondemand.com", org: "my-org", space: "dev", user: "tester" }),
+	loginStatus: async () =>
+		session.loggedOut
+			? { loggedIn: false, api: "https://api.cf.eu10.hana.ondemand.com", error: "token expired" }
+			: { loggedIn: true, api: "https://api.cf.eu10.hana.ondemand.com", org: "my-org", space: "dev", user: "tester" },
+	loginUrl: async (api) => api.replace("://api.", "://login."),
+	loginWithPasscode: async (api, passcode) => {
+		session.logins.push([api, passcode]);
+		session.loggedOut = false;
+	},
 	orgs: async () => [{ name: "my-org", guid: "o1" }],
 	spaces: async () => [{ name: "dev", guid: "s1" }],
 	boundApps: async () => [{ name: "my-srv", guid: "a1" }],
@@ -129,6 +139,15 @@ function existingConfiguration() {
 			assert.match(read("ui5-deploy-btp.yaml"), /url: http:\/\/localhost:5050/);
 			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /credentials:/);
 			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /transport:/);
+		}
+	);
+	session.loggedOut = true;
+	await scenario(
+		"expired cf session, region and passcode",
+		{ cfRegion: "https://api.cf.eu20.hana.ondemand.com", cfLoginMethod: "sso", cfPasscode: " abc123 ", runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_RUNTIME", abapApp: "ZFIXTURE", abapPackage: "$TMP", abapTransport: "", abapClient: "300" },
+		(read, env) => {
+			assert.deepStrictEqual(session.logins, [["https://api.cf.eu20.hana.ondemand.com", "abc123"]]);
+			assert.strictEqual(env.BTP_DESTINATION, "SYS_RUNTIME");
 		}
 	);
 	if (isFixture) {
