@@ -1,0 +1,42 @@
+{
+  "name": "btp-on-premise-access",
+  "displayName": "BTP On-Premise Access",
+  "description": "Command Palette entry that opens the BTP On-Premise Access generator (@scodigis/generator-btp-on-premise-scripts) in the Template Wizard.",
+  "version": "0.1.0",
+  "publisher": "scodigis",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "sap",
+    "sapui5",
+    "fiori",
+    "sapbtp",
+    "destination"
+  ],
+  "extensionDependencies": [
+    "SAPOS.yeoman-ui"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "btpOnPremiseAccess.generate",
+        "title": "Generate BTP On-Premise Destination Scripts",
+        "category": "SAP BTP"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce@3.2.1 package"
+  }
+}

@@ -53,7 +53,8 @@ npm install -g @scodigis/generator-btp-on-premise-scripts
 ```
 
 Reopen the Template Wizard in VS Code / SAP Business Application Studio; the "BTP On-Premise Access" tile
-appears there. From a terminal (needs `npm i -g yo`), run `yo @scodigis/btp-on-premise-scripts`.
+appears there. The VS Code extension in [`vscode-extension/`](vscode-extension) adds the Command Palette entry
+**SAP BTP: Generate BTP On-Premise Destination Scripts**, which opens this generator directly. From a terminal (needs `npm i -g yo`), run `yo @scodigis/btp-on-premise-scripts`.
 
 ## Development
 
