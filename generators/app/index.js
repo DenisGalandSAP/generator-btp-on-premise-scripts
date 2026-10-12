@@ -11,6 +11,7 @@ const path = require("path");
 const { Prompts } = require("@sap-devx/yeoman-ui-types");
 const project = require("./lib/project");
 const cf = require("./lib/cf");
+const regions = require("./lib/regions");
 
 const STEPS = {
 	project: { name: "Project", description: "SAPUI5 or SAP Fiori elements project to add the BTP destination scripts to" },
@@ -21,39 +22,6 @@ const STEPS = {
 	deploy: { name: "Deployment", description: "ABAP repository target and logon for the deploy destination" }
 };
 
-// SAP BTP Cloud Foundry regions, as offered by the Cloud Connector when adding a subaccount
-const CF_REGIONS = [
-	["eu10", "Europe (Frankfurt) - AWS"],
-	["eu10-002", "Europe (Frankfurt) - AWS"],
-	["eu10-003", "Europe (Frankfurt) - AWS"],
-	["eu10-004", "Europe (Frankfurt) - AWS"],
-	["eu10-005", "Europe (Frankfurt) - AWS"],
-	["eu11", "Europe (Frankfurt) EU Access - AWS"],
-	["eu20", "Europe (Netherlands) - Azure"],
-	["eu20-001", "Europe (Netherlands) - Azure"],
-	["eu20-002", "Europe (Netherlands) - Azure"],
-	["eu30", "Europe (Frankfurt) - Google Cloud"],
-	["ch20", "Switzerland (Zurich) - Azure"],
-	["us10", "US East (VA) - AWS"],
-	["us10-001", "US East (VA) - AWS"],
-	["us10-002", "US East (VA) - AWS"],
-	["us11", "US West (Oregon) - AWS"],
-	["us20", "US West (WA) - Azure"],
-	["us21", "US East (VA) - Azure"],
-	["us30", "US Central (IA) - Google Cloud"],
-	["ca10", "Canada (Montreal) - AWS"],
-	["br10", "Brazil (Sao Paulo) - AWS"],
-	["jp10", "Japan (Tokyo) - AWS"],
-	["jp20", "Japan (Tokyo) - Azure"],
-	["ap10", "Australia (Sydney) - AWS"],
-	["ap11", "Singapore - AWS"],
-	["ap12", "South Korea (Seoul) - AWS"],
-	["ap20", "Australia (Sydney) - Azure"],
-	["ap21", "Singapore - Azure"],
-	["in30", "India (Mumbai) - Google Cloud"],
-	["il30", "Israel (Tel Aviv) - Google Cloud"],
-	["sa30", "Saudi Arabia (Dammam) - Google Cloud"]
-].map(([region, location]) => ({ api: `https://api.cf.${region}.hana.ondemand.com`, name: `${region}  -  ${location}` }));
 const OTHER_ENDPOINT = "other";
 
 const SUPPORTED_AUTH = ["NoAuthentication", "BasicAuthentication"];
@@ -125,10 +93,12 @@ module.exports = class extends Generator {
 
 	/* ---------- 2. login ---------- */
 
-	_endpointChoices() {
+	// SAP BTP Cloud Foundry regions, as offered by the Cloud Connector when adding a subaccount
+	async _endpointChoices() {
+		if (!this.regions) this.regions = await regions.list();
 		const current = (this.cfStatus.api || "").replace(/\/+$/, "");
-		const choices = CF_REGIONS.map((r) => ({ name: `${r.name}  (${r.api})`, value: r.api }));
-		if (current && !CF_REGIONS.some((r) => r.api === current)) choices.unshift({ name: `${current}  (current cf target)`, value: current });
+		const choices = this.regions.regions.map((r) => ({ name: `${r.key}  -  ${r.location} - ${r.provider}  (${r.api})`, value: r.api }));
+		if (current && !choices.some((c) => c.value === current)) choices.unshift({ name: `${current}  (current cf target)`, value: current });
 		choices.push({ name: "Other - enter the API endpoint", value: OTHER_ENDPOINT });
 		return choices;
 	}
@@ -144,8 +114,11 @@ module.exports = class extends Generator {
 				name: "cfRegion",
 				message: "Region (API endpoint)",
 				choices: () => this._endpointChoices(),
-				default: (this.cfStatus.api || "").replace(/\/+$/, "") || CF_REGIONS[0].api,
-				guiOptions: { mandatory: true, hint: "Cloud Foundry API endpoint of the subaccount, see the subaccount overview in the BTP cockpit" }
+				default: (this.cfStatus.api || "").replace(/\/+$/, "") || "https://api.cf.eu10.hana.ondemand.com",
+				guiOptions: {
+					mandatory: true,
+					hint: "Cloud Foundry API endpoint of the subaccount, see the subaccount overview in the BTP cockpit (regions listed from SAP Help, built-in list when offline)"
+				}
 			},
 			{
 				type: "input",

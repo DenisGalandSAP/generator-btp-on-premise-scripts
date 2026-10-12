@@ -103,8 +103,54 @@ function existingConfiguration() {
 	console.log("OK existing ui5.yaml / ui5-deploy.yaml read");
 }
 
+async function regionList() {
+	const regions = require("../generators/app/lib/regions");
+	const page = `| other | table |
+<table>
+<tr><th valign="top">IaaS Provider</th><th>Region</th><th>Region Name</th><th>API Endpoint</th></tr>
+<tr><td>
+
+Amazon Web Services
+
+</td><td>eu10</td><td>Europe \\(Frankfurt\\)</td><td>
+
+**cf-eu10:**
+
+api.cf.eu10.hana.ondemand.com
+
+**cf-eu10-002:**
+
+api.cf.eu10-002.hana.ondemand.com
+
+</td></tr>
+<tr><td>Microsoft Azure</td><td>cn20</td><td>China \\(North 3\\)</td><td>api.cf.cn20.platform.sapcloud.cn</td></tr>
+</table>
+<table>
+<tr><th>IaaS Provider</th><th>Region Name</th><th>API Endpoint</th></tr>
+<tr><td>Amazon Web Services</td><td>US East \\(VA\\)</td><td>api.cf.eu10.hana.ondemand.com</td></tr>
+</table>`;
+	assert.deepStrictEqual(regions.parse(page), [
+		{ key: "eu10", api: "https://api.cf.eu10.hana.ondemand.com", location: "Europe (Frankfurt)", provider: "AWS" },
+		{ key: "eu10-002", api: "https://api.cf.eu10-002.hana.ondemand.com", location: "Europe (Frankfurt)", provider: "AWS" },
+		{ key: "cn20", api: "https://api.cf.cn20.platform.sapcloud.cn", location: "China (North 3)", provider: "Azure" }
+	]);
+	const realFetch = global.fetch;
+	global.fetch = async () => {
+		throw new Error("offline");
+	};
+	try {
+		const offline = await regions.list();
+		assert.strictEqual(offline.source, "built-in");
+		assert.ok(offline.regions.some((r) => r.api === "https://api.cf.eu10-004.hana.ondemand.com"));
+	} finally {
+		global.fetch = realFetch;
+	}
+	console.log("OK region list");
+}
+
 (async () => {
 	launchJsonMerge();
+	await regionList();
 	existingConfiguration();
 	await scenario(
 		"different destinations, deploy without authentication",
