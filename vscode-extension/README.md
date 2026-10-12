@@ -11,5 +11,5 @@ generator is not installed yet, the Template Wizard offers to install it.
 
 ```sh
 npm run package                                   # creates btp-on-premise-access-<version>.vsix
-code --install-extension btp-on-premise-access-0.0.40.vsix
+code --install-extension btp-on-premise-access-0.1.0.vsix
 ```
