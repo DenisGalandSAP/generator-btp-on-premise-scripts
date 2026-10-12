@@ -25,6 +25,7 @@ Module.prototype.require = function (request) {
 const DESTINATIONS = [
 	{ Name: "SYS_DEPLOY", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "NoAuthentication", "sap-client": "100", level: "subaccount" },
 	{ Name: "SYS_RUNTIME", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "BasicAuthentication", User: "TECH", "sap-client": "300", level: "subaccount" },
+	{ Name: "MYSYS", Type: "HTTP", ProxyType: "OnPremise", URL: "http://mysys:443", Authentication: "BasicAuthentication", User: "TECH", level: "subaccount" },
 	{ Name: "INTERNET", Type: "HTTP", ProxyType: "Internet", URL: "https://example.org", Authentication: "NoAuthentication", level: "subaccount" }
 ];
 Object.assign(cf, {
@@ -84,8 +85,17 @@ function launchJsonMerge() {
 	console.log("OK launch.json merge");
 }
 
+function existingConfiguration() {
+	const { deployDefaults, runtimeDestinations } = require("../generators/app/lib/project");
+	assert.deepStrictEqual(deployDefaults(fixture), { source: "ui5-deploy.yaml", app: "ZFIXTURE", package: "ZFIXTURE", transport: "SYSK900001", client: "100", destination: "MYSYS" });
+	assert.deepStrictEqual(runtimeDestinations(fixture), ["MYSYS"]);
+	assert.deepStrictEqual(deployDefaults(os.tmpdir()), {});
+	console.log("OK existing ui5.yaml / ui5-deploy.yaml read");
+}
+
 (async () => {
 	launchJsonMerge();
+	existingConfiguration();
 	await scenario(
 		"different destinations, deploy without authentication",
 		{ runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_DEPLOY", abapApp: "zfixture", abapPackage: "zfixture", abapTransport: "SYSK900001", abapClient: "100", deployUser: "DEPLOYER", deployPassword: "p#ss 'x'" },
@@ -121,6 +131,18 @@ function launchJsonMerge() {
 			assert.doesNotMatch(read("ui5-deploy-btp.yaml"), /transport:/);
 		}
 	);
+	if (isFixture) {
+		await scenario(
+			"defaults taken from the existing ui5.yaml / ui5-deploy.yaml",
+			{},
+			(read, env) => {
+				assert.strictEqual(env.BTP_DESTINATION, "MYSYS");
+				assert.strictEqual(env.BTP_DEPLOY_DESTINATION, "MYSYS");
+				assert.match(read("ui5-deploy-btp.yaml"), /name: ZFIXTURE\n\s+package: ZFIXTURE\n\s+transport: SYSK900001/);
+				assert.match(read("ui5-deploy-btp.yaml"), /client: "100"/);
+			}
+		);
+	}
 })().catch((e) => {
 	console.error(e);
 	process.exit(1);

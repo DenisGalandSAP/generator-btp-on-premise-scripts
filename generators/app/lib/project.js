@@ -186,27 +186,51 @@ function findDeployTask(doc) {
 	return YAML.isSeq(tasks) ? tasks.items.find((t) => YAML.isMap(t) && t.get("name") === DEPLOY_TASK) : undefined;
 }
 
-/** App name / package / transport / client of an existing deploy configuration, if any. */
+/**
+ * App name / package / transport / client / destination of an existing deploy configuration, if any.
+ * ui5-deploy-btp.yaml wins over ui5-deploy.yaml; its target is the local proxy, so the BTP destination
+ * comes from ui5-deploy.yaml.
+ */
 function deployDefaults(root) {
+	const result = {};
 	for (const file of ["ui5-deploy-btp.yaml", "ui5-deploy.yaml"]) {
 		const text = read(path.join(root, file));
 		if (!text) continue;
 		try {
-			const task = findDeployTask(parseUi5Yaml(text));
-			if (!task) continue;
-			const cfg = task.get("configuration").toJS();
-			return {
-				source: file,
-				app: cfg.app && cfg.app.name,
-				package: cfg.app && cfg.app.package,
-				transport: cfg.app && cfg.app.transport,
-				client: cfg.target && cfg.target.client !== undefined ? String(cfg.target.client) : undefined
-			};
+			const doc = parseUi5Yaml(text);
+			const task = findDeployTask(doc);
+			if (!task || !YAML.isMap(task.get("configuration"))) continue;
+			const cfg = task.get("configuration").toJS(doc); // yaml v2: a node needs its document
+			const app = cfg.app || {};
+			const target = cfg.target || {};
+			if (!result.source) {
+				Object.assign(result, {
+					source: file,
+					app: app.name,
+					package: app.package,
+					transport: app.transport,
+					client: target.client !== undefined && target.client !== null ? String(target.client) : undefined
+				});
+			}
+			if (!result.destination && target.destination) result.destination = String(target.destination);
 		} catch (e) {
 			/* ignore unreadable file */
 		}
 	}
-	return {};
+	return result;
+}
+
+/** Destinations of the fiori-tools-proxy backends in ui5.yaml. */
+function runtimeDestinations(root) {
+	try {
+		const ui5 = parseUi5Yaml(read(path.join(root, "ui5.yaml")) || "").toJS() || {};
+		const middlewares = (ui5.server && ui5.server.customMiddleware) || [];
+		const proxy = middlewares.find((m) => m && m.name === "fiori-tools-proxy");
+		const backends = (proxy && proxy.configuration && proxy.configuration.backend) || [];
+		return (Array.isArray(backends) ? backends : [backends]).map((b) => b && b.destination).filter(Boolean).map(String);
+	} catch (e) {
+		return [];
+	}
 }
 
 /**
@@ -285,4 +309,4 @@ function ensureGitignore(text, entry) {
 	return (text && !text.endsWith("\n") ? text + "\n" : text || "") + entry + "\n";
 }
 
-module.exports = { inspect, findProjects, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, launchJson, ensureGitignore, read };
+module.exports = { inspect, findProjects, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read };

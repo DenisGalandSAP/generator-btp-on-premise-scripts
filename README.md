@@ -18,7 +18,10 @@ proxy, and forwards each request with the connectivity token, the Cloud Connecto
    service instance. SSH must be enabled for the app.
 4. **Destinations** – runtime destination (`npm run start-btp`) and deploy destination (`npm run deploy-btp`).
    Only OnPremise HTTP destinations with `NoAuthentication` or `BasicAuthentication` work.
-5. **Deployment** – BSP name, package, transport, client. If the deploy destination has
+   Prefilled from `.env`, else from the `destination` in `ui5.yaml` / `ui5-deploy.yaml` when the
+   app can see a destination of that name.
+5. **Deployment** – BSP name, package, transport, client, prefilled from an existing
+   `ui5-deploy-btp.yaml` or `ui5-deploy.yaml`. If the deploy destination has
    `NoAuthentication`, the ABAP user and password are asked and written to `.env` (`USR` / `SAP_PWD`).
 
 ## What it writes into the project
