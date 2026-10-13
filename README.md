@@ -189,8 +189,10 @@ npm publish                       # runs npm test first (prepublishOnly); publis
 
 The marketplace is this GitHub repository, so pushing to `main` publishes the plugin. Keep the version in
 `claude-plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` equal to `package.json`, and
-publish to npm first: the skill runs `@scodigis/generator-btp-on-premise-scripts@^<version>`. Check the
-manifests with `claude plugin validate .` before pushing. Users get the new version with
+publish to npm first. The skill runs the exact version `@scodigis/generator-btp-on-premise-scripts@<version>`
+(the Anthropic directory rejects ranges), so update the pin in `claude-plugin/skills/btp-on-premise-access/SKILL.md`
+on each release. Check the manifests with `claude plugin validate .` and
+`claude plugin validate --strict ./claude-plugin` before pushing. Users get the new version with
 `/plugin marketplace update scodigis`.
 
 ## License
