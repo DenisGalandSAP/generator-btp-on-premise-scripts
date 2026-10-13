@@ -32,9 +32,21 @@ through `npx`, the same code as the "BTP On-Premise Access" generator of the SAP
 
 ## Data handling
 
-Everything runs on your machine. The tool talks only to your Cloud Foundry API, the Destination service and
-the connectivity proxy of your own subaccount, using your existing cf session. Destination passwords and
-client secrets are never shown to Claude. Claude never asks for a password in the chat: a password login
+Everything runs on your machine, and nothing is sent to the plugin's author. The tool and the scripts it
+writes connect to:
+
+- the Cloud Foundry API and login server of your own region, through the cf CLI and your existing session;
+- the Destination service and its token endpoint in your own subaccount, with the credentials of the app's
+  service binding, to list destinations;
+- the connectivity proxy of your subaccount, through the `cf ssh` tunnel, which forwards your app's requests to
+  the Cloud Connector and your backend;
+- `raw.githubusercontent.com`, for SAP's public list of Cloud Foundry regions (a plain download, nothing is
+  sent);
+- the npm registry, when `npx` downloads the package.
+
+The settings it writes stay in your project: `.env.<env>` holds the org, space, app and destination names, and,
+only when you enter them, the ABAP user and password for deployment. Destination passwords and client secrets
+are never shown to Claude. Claude never asks for a password in the chat: a password login
 happens in your own terminal, and you type the ABAP deploy password into `.env.<env>` yourself.
 
 Source, setup details and troubleshooting:
