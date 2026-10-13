@@ -24,7 +24,7 @@ Module.prototype.require = function (request) {
 };
 const DESTINATIONS = [
 	{ Name: "SYS_DEPLOY", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "NoAuthentication", "sap-client": "100", level: "subaccount" },
-	{ Name: "SYS_RUNTIME", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "BasicAuthentication", User: "TECH", "sap-client": "300", level: "subaccount" },
+	{ Name: "SYS_RUNTIME", Type: "HTTP", ProxyType: "OnPremise", URL: "http://sys:443", Authentication: "BasicAuthentication", User: "TECH", Password: "s3cret", "sap-client": "300", level: "subaccount" },
 	{ Name: "MYSYS", Type: "HTTP", ProxyType: "OnPremise", URL: "http://mysys:443", Authentication: "BasicAuthentication", User: "TECH", level: "subaccount" },
 	{ Name: "INTERNET", Type: "HTTP", ProxyType: "Internet", URL: "https://example.org", Authentication: "NoAuthentication", level: "subaccount" }
 ];
@@ -91,6 +91,45 @@ async function scenario(title, prompts, verify, options = {}) {
 	verify(read, parseEnv(read(`.env.${profile}`)), project);
 	console.log(`OK ${title}`);
 	return project;
+}
+
+// the non-interactive CLI of the Claude Code plugin (bin/btp-setup.js), on the same cf stub
+async function cli() {
+	const { commands } = require("../bin/btp-setup");
+	const dests = await commands.destinations({ org: "my-org", space: "dev", app: "my-srv" });
+	assert.deepStrictEqual(dests.map((d) => d.Name), ["SYS_DEPLOY", "SYS_RUNTIME", "MYSYS"]);
+	assert.ok(!JSON.stringify(dests).includes("s3cret"), "no destination password in the output");
+	await assert.rejects(commands.destinations({ org: "my-org", space: "dev", app: "nope" }), /not bound/);
+
+	const project = copyProject();
+	const args = { project, env: "dev", org: "my-org", space: "dev", app: "my-srv", destination: "SYS_RUNTIME", "deploy-destination": "SYS_DEPLOY", bsp: "zfixture", package: "zfixture", transport: "sysk900001", client: "100", "deploy-user": "DEPLOYER", sso: true };
+	const dry = await commands.apply({ ...args, "dry-run": true });
+	assert.ok(dry.written.includes("package.json") && !fs.existsSync(path.join(project, ".env.dev")), "dry run writes nothing");
+	process.env.SAP_PWD = "p#ss";
+	const result = await commands.apply(args);
+	delete process.env.SAP_PWD;
+	assert.deepStrictEqual(result.scripts, { start: "npm run start-btp:dev", deploy: "npm run deploy-btp:dev", deployTest: "npm run deploy-btp-test:dev", proxy: "npm run btp-proxy:dev" });
+	const env = parseEnv(fs.readFileSync(path.join(project, ".env.dev"), "utf8"));
+	assert.strictEqual(env.BTP_CF_SSO, "true");
+	assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, "5051");
+	assert.strictEqual(env.USR, "DEPLOYER");
+	assert.strictEqual(env.SAP_PWD, "p#ss");
+	assert.match(fs.readFileSync(path.join(project, "ui5-deploy-btp-dev.yaml"), "utf8"), /name: ZFIXTURE\n\s+package: ZFIXTURE\n\s+transport: SYSK900001/);
+	assert.ok(fs.existsSync(path.join(project, "scripts", "btp-proxy.js")));
+
+	const info = await commands.inspect({ project, env: "dev" });
+	assert.deepStrictEqual(info.environments, ["dev"]);
+	assert.strictEqual(info.existing.SAP_PWD, "***");
+	assert.strictEqual(info.existing.USR, "DEPLOYER");
+
+	// run again without deployment and without a password: nothing secret is lost, deploy files go
+	const again = await commands.apply({ project, env: "dev", org: "my-org", space: "dev", app: "my-srv", destination: "SYS_RUNTIME" });
+	assert.deepStrictEqual(again.removed, ["ui5-deploy-btp-dev.yaml"]);
+	assert.deepStrictEqual(Object.keys(again.scripts), ["start", "proxy"]);
+	assert.strictEqual(parseEnv(fs.readFileSync(path.join(project, ".env.dev"), "utf8")).BTP_CF_SSO, "true", "SSO flag kept");
+	await assert.rejects(commands.apply({ ...args, destination: "INTERNET" }), /not an OnPremise HTTP destination/);
+	await assert.rejects(commands.apply({ ...args, transport: "", package: "ZPKG" }), /--transport is required/);
+	console.log("OK CLI (bin/btp-setup.js)");
 }
 
 function launchJsonMerge() {
@@ -172,6 +211,7 @@ api.cf.eu10-002.hana.ondemand.com
 	launchJsonMerge();
 	await regionList();
 	existingConfiguration();
+	await cli();
 	const project = await scenario(
 		"different destinations, deploy without authentication",
 		{ runtimeDestination: "SYS_RUNTIME", deployDestination: "SYS_DEPLOY", abapApp: "zfixture", abapPackage: "zfixture", abapTransport: "SYSK900001", abapClient: "100", deployUser: "DEPLOYER", deployPassword: "p#ss 'x'" },

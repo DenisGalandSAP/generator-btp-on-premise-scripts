@@ -1,7 +1,8 @@
 # @scodigis/generator-btp-on-premise-scripts
 
 A Yeoman generator, shown as "BTP On-Premise Access" in the Template Wizard. It lets a SAPUI5 or SAP Fiori
-elements app run and deploy from a local machine through on-premise SAP BTP destinations.
+elements app run and deploy from a local machine through on-premise SAP BTP destinations. The same setup is
+available as a [Claude Code plugin](#claude-code-plugin).
 
 The app's backend calls go to a local proxy (`scripts/btp-proxy.js`). The proxy reads the destination and
 connectivity service keys from the environment of a Cloud Foundry app and opens `cf ssh -L` to the
@@ -120,6 +121,49 @@ tile appears. The VS Code extension in [`vscode-extension/`](vscode-extension) a
 "SAP BTP: Generate BTP On-Premise Destination Scripts", which opens this generator directly. From a terminal,
 run `yo @scodigis/btp-on-premise-scripts` (this needs `npm i -g yo`).
 
+## Claude Code plugin
+
+The plugin `btp-on-premise-access` lets Claude Code go through the same steps in a conversation: it asks for the
+project, environment, region, org, space, app and destinations, and writes the same files.
+
+```text
+/plugin install btp-on-premise-access --marketplace DenisGalandSAP/generator-btp-on-premise-scripts
+```
+
+On Claude Code versions before 2.1.275, add the marketplace first:
+
+```text
+/plugin marketplace add DenisGalandSAP/generator-btp-on-premise-scripts
+/plugin install btp-on-premise-access@scodigis
+```
+
+Then ask, for example, "set up this app to run through our BTP destination for dev". The plugin calls the
+command-line tool below through `npx`, so it needs Node.js 22 or later and the cf CLI, but no global install.
+Claude never asks for passwords in the chat: a password login happens in your own terminal, and the ABAP
+password for a deploy destination without authentication goes into `.env.<env>` (`SAP_PWD`) by your hand.
+
+The plugin lives in [`claude-plugin/`](claude-plugin), the marketplace in
+[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
+
+## Command-line tool
+
+`btp-on-premise-setup` runs each step of the wizard as a separate command and prints JSON. The Claude Code
+plugin uses it, and it suits scripts too:
+
+```sh
+npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup --help
+
+btp-on-premise-setup status
+btp-on-premise-setup apps --org my-org --space dev
+btp-on-premise-setup destinations --org my-org --space dev --app btp-tunnel
+btp-on-premise-setup apply --project . --env dev --org my-org --space dev --app btp-tunnel \
+  --destination SYS_RUNTIME --deploy-destination SYS_DEPLOY --bsp ZMYAPP --package ZPKG --transport SYSK900001 --dry-run
+```
+
+`apply` writes the files with the same code as the generator. Destination passwords and client secrets are
+never printed, and `SAP_PWD` is shown as `***`. The deploy password is taken from the environment variable
+`SAP_PWD` when it is set.
+
 ## Development
 
 ```sh
@@ -140,6 +184,14 @@ npm version patch                 # or minor / major - bumps package.json (and t
 npm run pack:check                # check the file list that will be published
 npm publish                       # runs npm test first (prepublishOnly); publishConfig makes it public
 ```
+
+## Release (Claude Code plugin)
+
+The marketplace is this GitHub repository, so pushing to `main` publishes the plugin. Keep the version in
+`claude-plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` equal to `package.json`, and
+publish to npm first: the skill runs `@scodigis/generator-btp-on-premise-scripts@^<version>`. Check the
+manifests with `claude plugin validate .` before pushing. Users get the new version with
+`/plugin marketplace update scodigis`.
 
 ## License
 

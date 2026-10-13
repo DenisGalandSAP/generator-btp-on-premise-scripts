@@ -1,11 +1,15 @@
 {
   "name": "@scodigis/generator-btp-on-premise-scripts",
   "displayName": "BTP On-Premise Access",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Adds scripts to run and deploy a SAPUI5 / SAP Fiori elements app through an on-premise SAP BTP destination (cf ssh tunnel to the connectivity proxy).",
   "main": "generators/app/index.js",
+  "bin": {
+    "btp-on-premise-setup": "bin/btp-setup.js"
+  },
   "image": "yeoman.svg",
   "files": [
+    "bin",
     "generators",
     "yeoman.svg"
   ],
@@ -16,7 +20,8 @@
     "fiori",
     "sapbtp",
     "destination",
-    "cloud-foundry"
+    "cloud-foundry",
+    "claude-code"
   ],
   "author": "Scodigis",
   "repository": {
