@@ -1,6 +1,7 @@
 {
   "name": "btp-on-premise-access",
-  "description": "Lets a SAPUI5 / SAP Fiori elements app run and deploy from a local machine through on-premise SAP BTP destinations (cf ssh tunnel to the connectivity proxy). Claude walks through the same steps as the 'BTP On-Premise Access' Template Wizard generator.",
+  "displayName": "BTP On-Premise Access",
+  "description": "Run and deploy a SAPUI5 or SAP Fiori elements app from your own machine through on-premise SAP BTP destinations. Claude sets up a local proxy that reaches the Cloud Connector through a cf ssh tunnel, with the same steps as the BTP On-Premise Access generator in the SAP Fiori tools Template Wizard.",
   "version": "0.7.0",
   "author": {
     "name": "Scodigis",
@@ -8,6 +9,9 @@
   },
   "homepage": "https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts",
   "repository": "https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts",
+  "documentationUrl": "https://community.sap.com/t5/technology-blog-posts-by-members/vscode-with-s-4-hana-classics-on-premise-and-rise-private-edition-btp/ba-p/14498731",
+  "supportUrl": "https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts/issues",
+  "privacyPolicyUrl": "https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts/blob/main/claude-plugin/README.md#data-handling",
   "license": "MIT",
   "keywords": ["sap", "sapui5", "fiori", "sap-btp", "destination", "cloud-foundry", "cloud-connector"]
 }
