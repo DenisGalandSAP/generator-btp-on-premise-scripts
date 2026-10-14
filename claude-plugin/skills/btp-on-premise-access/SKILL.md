@@ -12,7 +12,7 @@ reading and writing; never write the generated files (`scripts/btp*.js`, `ui5-bt
 Run it as:
 
 ```sh
-npx -y -p @scodigis/generator-btp-on-premise-scripts@0.7.0 btp-on-premise-setup <command> [options]
+npx -y -p @scodigis/generator-btp-on-premise-scripts@0.7.1 btp-on-premise-setup <command> [options]
 ```
 
 Below, `CLI` stands for that command. Every command prints JSON; a failure prints `{ "error": "..." }` and exits

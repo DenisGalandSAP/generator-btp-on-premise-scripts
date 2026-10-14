@@ -2,7 +2,7 @@
   "name": "btp-on-premise-access",
   "displayName": "BTP On-Premise Access",
   "description": "Run and deploy a SAPUI5 or SAP Fiori elements app from your own machine through on-premise SAP BTP destinations. Claude sets up a local proxy that reaches the Cloud Connector through a cf ssh tunnel, with the same steps as the BTP On-Premise Access generator in the SAP Fiori tools Template Wizard.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "author": {
     "name": "Scodigis",
     "url": "https://github.com/DenisGalandSAP"
