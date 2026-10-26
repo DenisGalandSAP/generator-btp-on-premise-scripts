@@ -1,0 +1,4 @@
+# LF in the repository, whatever the editor on Windows writes
+* text=auto eol=lf
+*.png binary
+*.svg text eol=lf
