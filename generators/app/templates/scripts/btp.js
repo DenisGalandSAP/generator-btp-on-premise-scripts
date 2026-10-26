@@ -192,6 +192,9 @@ const exitWith = (child) => new Promise((resolve) => child.on("exit", (code) => 
 
 async function main() {
 	const fiori = fioriCli();
+	// a SAPUI5 library environment has no ui5-btp-<env>.yaml: it is only deployed
+	const runConfig = `ui5-btp${suffix}.yaml`;
+	if (mode === "start" && !fs.existsSync(path.join(ROOT, runConfig))) throw new Error(`${runConfig} not found - this environment is set up for deployment only, use 'deploy'`);
 	await ensureProxy(proxyConfig);
 
 	if (mode === "start") {
@@ -202,7 +205,7 @@ async function main() {
 			const m = /--open\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(start);
 			if (m) open = m[1] || m[2] || m[3];
 		} catch (e) { /* keep the default */ }
-		finish(await exitWith(run(fiori, ["run", "--config", `./ui5-btp${suffix}.yaml`, "--open", open])));
+		finish(await exitWith(run(fiori, ["run", "--config", `./${runConfig}`, "--open", open])));
 		return;
 	}
 

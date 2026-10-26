@@ -19,7 +19,10 @@ function parseUi5Yaml(text) {
 	return YAML.parseAllDocuments(text)[0];
 }
 
-/** Checks that the folder holds a SAPUI5 freestyle or SAP Fiori elements application. */
+/**
+ * Checks that the folder holds a SAPUI5 freestyle or SAP Fiori elements application, or a SAPUI5 library
+ * (`library: true` - nothing to run, it is only deployed).
+ */
 function inspect(projectPath) {
 	if (!projectPath) return { error: "Select the project folder" };
 	const root = path.resolve(projectPath);
@@ -41,7 +44,18 @@ function inspect(projectPath) {
 	} catch (e) {
 		return { error: `ui5.yaml is not valid YAML: ${e.message}` };
 	}
-	if (!ui5 || ui5.type !== "application") return { error: `ui5.yaml declares type '${ui5 && ui5.type}', expected 'application'` };
+	if (ui5 && ui5.type === "library") {
+		return {
+			root,
+			id: ui5.metadata && ui5.metadata.name,
+			kind: "SAPUI5 library",
+			library: true,
+			pkg,
+			hasBuildScript: !!(pkg.scripts && pkg.scripts.build),
+			hasProxyMiddleware: false
+		};
+	}
+	if (!ui5 || ui5.type !== "application") return { error: `ui5.yaml declares type '${ui5 && ui5.type}', expected 'application' or 'library'` };
 
 	const webapp = (ui5.resources && ui5.resources.configuration && ui5.resources.configuration.paths && ui5.resources.configuration.paths.webapp) || "webapp";
 	const manifestText = read(path.join(root, webapp, "manifest.json"));
@@ -258,8 +272,9 @@ function runtimeDestinations(root) {
 /**
  * ui5-deploy-btp.yaml: based on ui5-deploy.yaml when there is one (keeps its custom tasks), otherwise
  * on ui5.yaml without the server part. The deploy-to-abap target is the local btp-proxy.
+ * library: generateCachebusterInfo is application-only, the preload is the last standard task of a library build.
  */
-function deployYaml(root, { port, destination, client, app, pkg, transport, credentials, script = "deploy-btp" }) {
+function deployYaml(root, { port, destination, client, app, pkg, transport, credentials, library, script = "deploy-btp" }) {
 	const deployText = read(path.join(root, "ui5-deploy.yaml"));
 	const doc = parseUi5Yaml(deployText || read(path.join(root, "ui5.yaml")));
 	if (!deployText) doc.delete("server");
@@ -271,7 +286,7 @@ function deployYaml(root, { port, destination, client, app, pkg, transport, cred
 	let task = findDeployTask(doc);
 	if (!task) {
 		if (!YAML.isSeq(doc.getIn(["builder", "customTasks"]))) doc.setIn(["builder", "customTasks"], doc.createNode([]));
-		task = doc.createNode({ name: DEPLOY_TASK, afterTask: "generateCachebusterInfo", configuration: {} });
+		task = doc.createNode({ name: DEPLOY_TASK, afterTask: library ? "generateLibraryPreload" : "generateCachebusterInfo", configuration: {} });
 		doc.getIn(["builder", "customTasks"]).items.push(task);
 	}
 	if (!YAML.isMap(task.get("configuration"))) task.set("configuration", doc.createNode({}));
@@ -279,10 +294,12 @@ function deployYaml(root, { port, destination, client, app, pkg, transport, cred
 	cfg.set("target", target);
 	if (credentials) cfg.set("credentials", doc.createNode({ username: "env:USR", password: "env:SAP_PWD" }));
 	else cfg.delete("credentials");
-	cfg.set("app", doc.createNode(appNode));
-	if (!cfg.has("exclude")) cfg.set("exclude", doc.createNode(["/test/"]));
+	// other keys of the existing app (description...) are kept
+	const prevApp = YAML.isMap(cfg.get("app")) ? cfg.get("app").toJS(doc) : {};
+	cfg.set("app", doc.createNode({ ...prevApp, ...appNode, ...(transport ? {} : { transport: undefined }) }));
+	if (!cfg.has("exclude")) cfg.set("exclude", doc.createNode(library ? ["/test/", "/test-resources/"] : ["/test/"]));
 
-	if (!doc.hasIn(["builder", "resources", "excludes"])) doc.setIn(["builder", "resources", "excludes"], doc.createNode(["/test/**", "/localService/**"]));
+	if (!library && !doc.hasIn(["builder", "resources", "excludes"])) doc.setIn(["builder", "resources", "excludes"], doc.createNode(["/test/**", "/localService/**"]));
 	return doc.toString({ lineWidth: 0 });
 }
 

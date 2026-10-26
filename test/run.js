@@ -12,6 +12,7 @@ const assert = require("assert");
 const args = process.argv.slice(2);
 const verbose = args.includes("--verbose");
 const fixture = path.join(__dirname, "fixture", "app");
+const libFixture = path.join(__dirname, "fixture", "lib");
 const source = path.resolve(args.find((a) => !a.startsWith("--")) || fixture);
 const isFixture = source === fixture;
 
@@ -59,10 +60,10 @@ Object.assign(cf, {
 const helpers = require("yeoman-test");
 const { parseEnv } = require("../generators/app/lib/project");
 
-function copyProject() {
+function copyProject(from = source) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "btp-gen-"));
-	const target = path.join(dir, path.basename(source));
-	fs.cpSync(source, target, { recursive: true, filter: (src) => !/[\\/](node_modules|dist|\.git)$/.test(src) });
+	const target = path.join(dir, path.basename(from));
+	fs.cpSync(from, target, { recursive: true, filter: (src) => !/[\\/](node_modules|dist|\.git)$/.test(src) });
 	// the copy starts without the generated files
 	for (const f of fs.readdirSync(target)) {
 		if (/^(ui5-btp|ui5-deploy-btp)(-[\w-]+)?\.yaml$|^\.env\.[\w-]+$/.test(f)) fs.rmSync(path.join(target, f), { force: true });
@@ -73,14 +74,14 @@ function copyProject() {
 
 // options.project: run again on the project of an earlier scenario; options.setup(project): prepare the copy
 async function scenario(title, prompts, verify, options = {}) {
-	const project = options.project || copyProject();
+	const project = options.project || copyProject(options.from);
 	if (options.setup) options.setup(project);
 	const profile = prompts.profile || "dev";
 	await helpers
 		.run(path.join(__dirname, "..", "generators", "app"))
 		.cd(project)
 		.withOptions({ skipInstall: true })
-		.withPrompts({ projectPath: project, profile, org: "my-org", space: "dev", app: "my-srv", ...prompts });
+		.withPrompts({ profile, org: "my-org", space: "dev", app: "my-srv", ...prompts, projectPath: project });
 	const read = (f) => fs.readFileSync(path.join(project, f), "utf8");
 	if (verbose) {
 		console.log(`\n================ ${title} (${project})`);
@@ -129,6 +130,19 @@ async function cli() {
 	assert.strictEqual(parseEnv(fs.readFileSync(path.join(project, ".env.dev"), "utf8")).BTP_CF_SSO, "true", "SSO flag kept");
 	await assert.rejects(commands.apply({ ...args, destination: "INTERNET" }), /not an OnPremise HTTP destination/);
 	await assert.rejects(commands.apply({ ...args, transport: "", package: "ZPKG" }), /--transport is required/);
+
+	// a library: --destination is the deploy destination, no start-btp, no ui5-btp-<env>.yaml
+	const lib = copyProject(libFixture);
+	assert.strictEqual((await commands.inspect({ project: lib })).library, true);
+	const libArgs = { project: lib, env: "dev", org: "my-org", space: "dev", app: "my-srv", bsp: "zfixturelib", package: "$tmp" };
+	await assert.rejects(commands.apply(libArgs), /--deploy-destination/);
+	const libResult = await commands.apply({ ...libArgs, destination: "SYS_RUNTIME" });
+	assert.deepStrictEqual(libResult.scripts, { deploy: "npm run deploy-btp:dev", deployTest: "npm run deploy-btp-test:dev", proxy: "npm run btp-proxy:dev" });
+	assert.ok(!libResult.written.includes("ui5-btp-dev.yaml") && !libResult.written.some((f) => f.includes("launch.json")));
+	const libEnv = parseEnv(fs.readFileSync(path.join(lib, ".env.dev"), "utf8"));
+	assert.strictEqual(libEnv.BTP_DESTINATION, "SYS_RUNTIME");
+	assert.strictEqual(libEnv.BTP_DEPLOY_DESTINATION, "SYS_RUNTIME");
+	assert.strictEqual(libEnv.BTP_DEPLOY_PROXY_PORT, undefined);
 	console.log("OK CLI (bin/btp-setup.js)");
 }
 
@@ -367,6 +381,29 @@ api.cf.eu10-002.hana.ondemand.com
 		}
 	);
 	space.apps = [{ name: "my-srv", guid: "a1" }];
+	await scenario(
+		"SAPUI5 library, deployment only",
+		{ deployDestination: "SYS_DEPLOY", abapApp: "zfixturelib", abapPackage: "zfixture", abapTransport: "SYSK900001", abapClient: "100", deployUser: "DEPLOYER", deployPassword: "p" },
+		(read, env, dir) => {
+			assert.strictEqual(env.BTP_DESTINATION, "SYS_DEPLOY");
+			assert.strictEqual(env.BTP_DEPLOY_DESTINATION, "SYS_DEPLOY");
+			assert.strictEqual(env.BTP_PROXY_PORT, "5050");
+			assert.strictEqual(env.BTP_DEPLOY_PROXY_PORT, undefined);
+			assert.ok(!fs.existsSync(path.join(dir, "ui5-btp-dev.yaml")) && !fs.existsSync(path.join(dir, ".vscode", "launch.json")));
+			const deploy = read("ui5-deploy-btp-dev.yaml");
+			assert.match(deploy, /type: library/);
+			assert.match(deploy, /afterTask: generateLibraryPreload/);
+			assert.match(deploy, /url: http:\/\/127.0.0.1:5050 # scripts\/btp-proxy.js -> BTP destination SYS_DEPLOY \(npm run deploy-btp:dev\)/);
+			assert.match(deploy, /- \/test-resources\//);
+			assert.doesNotMatch(deploy, /localService/);
+			assert.match(deploy, /transport: SYSK900001\n\s+description: Fixture library/); // kept from ui5-deploy.yaml
+			const scripts = JSON.parse(read("package.json")).scripts;
+			assert.strictEqual(scripts["deploy-btp:dev"], "node scripts/btp.js deploy dev");
+			assert.strictEqual(scripts["btp-proxy:dev"], "node scripts/btp-proxy.js --profile dev");
+			assert.strictEqual(scripts["start-btp:dev"], undefined);
+		},
+		{ from: libFixture }
+	);
 	if (isFixture) {
 		await scenario(
 			"defaults taken from the existing ui5.yaml / ui5-deploy.yaml",

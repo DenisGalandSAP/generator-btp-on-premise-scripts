@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://sap.github.io/ui5-tooling/schema/ui5.yaml.json
+
+specVersion: "3.0"
+metadata:
+  name: com.example.fixturelib
+type: library
+framework:
+  name: SAPUI5
+  version: "1.108.51"
+  libraries:
+    - name: sap.m

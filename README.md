@@ -107,6 +107,11 @@ The scripts still read a plain `.env` after `.env.<env>`, for values all environ
 Start the app with `npm run start-btp:<env>` or the run configuration. `npm start` and the Fiori tools
 Run / Preview still use `ui5.yaml`, whose destination only resolves in SAP Business Application Studio.
 
+A SAPUI5 library (`type: library` in `ui5.yaml`) has nothing to run, so it only gets a deploy destination:
+no `ui5-btp-<env>.yaml`, no `start-btp:<env>` and no run configuration. `npm run deploy-btp:<env>` starts the
+proxy on that destination itself, like it does for an app, and `deploy-to-abap` runs after
+`generateLibraryPreload` instead of `generateCachebusterInfo`.
+
 When the runtime and deploy destinations differ, each gets its own proxy and tunnel; you can change their
 ports in `.env.<env>`. The scripts need Node.js 22 or later and the cf CLI, and no extra npm packages.
 

@@ -12,7 +12,7 @@
     {
       "name": "btp-on-premise-access",
       "description": "Run and deploy a SAPUI5 / SAP Fiori elements app locally through on-premise SAP BTP destinations (cf ssh tunnel to the connectivity proxy).",
-      "version": "0.7.1",
+      "version": "0.7.2",
       "author": {
         "name": "Scodigis"
       },

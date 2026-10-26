@@ -23,7 +23,7 @@ const USAGE = `btp-on-premise-setup <command> [options] - prints JSON
   login-url  --api <url>                   page that shows an SSO passcode for the endpoint
   login      --api <url> --passcode <code> cf login with an SSO passcode
   inspect    --project <dir> [--env <name>]
-                                           app kind, environments set up, defaults for the environment
+                                           app kind (library: deploy only), environments set up, defaults
   orgs
   spaces     --org <org>
   apps       --org <org> --space <space>   apps bound to a destination and a connectivity instance, with SSH state
@@ -35,7 +35,9 @@ const USAGE = `btp-on-premise-setup <command> [options] - prints JSON
              [--deploy-destination <name> --bsp <name> --package <pkg> [--transport <tr>] [--client <nnn>]
               [--deploy-user <user>]] [--sso | --no-sso] [--dry-run]
                                            writes the environment; the deploy password is read from the
-                                           environment variable SAP_PWD (else left for the user to fill in)`;
+                                           environment variable SAP_PWD (else left for the user to fill in).
+                                           A SAPUI5 library is only deployed: --deploy-destination (or
+                                           --destination) is the one destination, there is no start-btp`;
 
 const OPTIONS = {
 	api: { type: "string" },
@@ -133,6 +135,7 @@ const commands = {
 			root: info.root,
 			id: info.id,
 			kind: info.kind,
+			library: !!info.library,
 			hasBuildScript: info.hasBuildScript,
 			environments: project.profiles(info.root),
 			env,
@@ -181,9 +184,12 @@ const commands = {
 	},
 
 	async apply(opts) {
-		need(opts, "project", "env", "org", "space", "app", "destination");
+		need(opts, "project", "env", "org", "space", "app");
 		const info = project.inspect(opts.project);
 		if (info.error) throw new Error(info.error);
+		// a library has nothing to run - its one destination is the deploy destination
+		if (info.library) opts = { ...opts, "deploy-destination": opts["deploy-destination"] || opts.destination };
+		need(opts, info.library ? "deploy-destination" : "destination");
 		const profile = opts.env.trim().toLowerCase();
 		if (!setup.PROFILE_NAME.test(profile)) throw new UsageError("--env: letters, digits, - and _ (e.g. dev, qual)");
 		const deploy = !!opts["deploy-destination"];
@@ -193,8 +199,9 @@ const commands = {
 			org: opts.org,
 			space: opts.space,
 			app: opts.app,
-			runtimeDestination: opts.destination,
+			runtimeDestination: info.library ? opts["deploy-destination"] : opts.destination,
 			deployDestination: deploy ? opts["deploy-destination"] : undefined,
+			library: !!info.library,
 			abapApp: upper(opts.bsp),
 			abapPackage: upper(opts.package),
 			abapTransport: upper(opts.transport),

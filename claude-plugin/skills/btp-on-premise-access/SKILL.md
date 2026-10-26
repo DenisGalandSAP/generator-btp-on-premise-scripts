@@ -12,7 +12,7 @@ reading and writing; never write the generated files (`scripts/btp*.js`, `ui5-bt
 Run it as:
 
 ```sh
-npx -y -p @scodigis/generator-btp-on-premise-scripts@0.7.1 btp-on-premise-setup <command> [options]
+npx -y -p @scodigis/generator-btp-on-premise-scripts@0.7.2 btp-on-premise-setup <command> [options]
 ```
 
 Below, `CLI` stands for that command. Every command prints JSON; a failure prints `{ "error": "..." }` and exits
@@ -31,8 +31,8 @@ point them to the Service Center of SAP Fiori tools instead. Mention this once a
 
 ### 1. Project and environment
 
-1. Find the app: the folder with `package.json`, `ui5.yaml` and `webapp/manifest.json`. Usually the current
-   working directory; otherwise ask.
+1. Find the app: the folder with `package.json`, `ui5.yaml` and `webapp/manifest.json`, or a SAPUI5 library
+   (`ui5.yaml` with `type: library`). Usually the current working directory; otherwise ask.
 2. `CLI inspect --project <dir>` - shows the app kind, the environments already set up (`environments`) and,
    for the first of them (or `dev`), the existing values and defaults. On `error`, `candidates` lists app
    folders found underneath; ask which one.
@@ -40,6 +40,10 @@ point them to the Service Center of SAP Fiori tools instead. Mention this once a
    that environment; a new one adds another. If it differs from the `env` of the previous call, run
    `CLI inspect --project <dir> --env <name>` again to get its values.
 4. If `hasBuildScript` is false, warn that `deploy-btp` needs a `build` script in `package.json`.
+5. If `library` is true, the project is a SAPUI5 library: there is nothing to run, it is only deployed. Skip the
+   runtime destination (step 4.2 and 4.3) and ask only for the deploy destination; it gets `deploy-btp:<env>`,
+   `deploy-btp-test:<env>` and `btp-proxy:<env>`, no `start-btp:<env>`. A hand-written `deploy-btp` script that
+   expects someone else's proxy to be running can be replaced by `deploy-btp:<env>`, which starts its own.
 
 ### 2. Cloud Foundry login
 
@@ -78,7 +82,7 @@ point them to the Service Center of SAP Fiori tools instead. Mention this once a
    `URL`, `sap-client`, `Authentication` and `supported`. Only those with `supported: true`
    (`NoAuthentication` or `BasicAuthentication`) work, because the local proxy has no user token. Credentials
    are never returned.
-2. Ask for the runtime destination (`npm run start-btp:<env>`). Default: `existing.BTP_DESTINATION`, then one of
+2. Ask for the runtime destination (`npm run start-btp:<env>`; not for a library). Default: `existing.BTP_DESTINATION`, then one of
    `runtimeDestinations` from `inspect`, then `deployDefaults.destination`.
 3. Ask whether the app should also be deployed through a BTP destination (default yes, unless the environment
    already exists without `BTP_DEPLOY_DESTINATION`). If yes, ask for the deploy destination (default:
@@ -108,6 +112,8 @@ If the deploy destination has `NoAuthentication`, the upload needs an ABAP user:
      [--deploy-destination <deploy> --bsp <name> --package <pkg> [--transport <tr>] [--client <nnn>] [--deploy-user <user>]] \
      [--sso | --no-sso] --dry-run
    ```
+
+   For a library, leave out `--destination` and pass `--deploy-destination` with the deployment options.
 
 2. On the user's go-ahead, run the same command without `--dry-run`. It writes the files, adds `.env` and
    `.env.<env>` to `.gitignore`, and runs `cf target` on the org and space.

@@ -1,0 +1,17 @@
+specVersion: "3.0"
+metadata:
+  name: com.example.fixturelib
+type: library
+builder:
+  customTasks:
+    - name: deploy-to-abap
+      afterTask: generateLibraryPreload
+      configuration:
+        target:
+          destination: SYS_DEPLOY
+          client: "100"
+        app:
+          name: ZFIXTURELIB
+          package: ZFIXTURE
+          transport: SYSK900001
+          description: Fixture library

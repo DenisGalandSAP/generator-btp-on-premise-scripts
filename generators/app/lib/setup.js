@@ -67,15 +67,22 @@ function ports(root, profile, prev = profileEnv(root, profile).values) {
  * Files to write for an environment.
  *   a: { profile, cfApi, sso (true / false / undefined = keep), org, space, app, runtimeDestination,
  *        deployDestination (undefined = no deployment), abapApp, abapPackage, abapTransport, abapClient,
- *        credentials (deploy destination without authentication), deployUser, deployPassword }
+ *        credentials (deploy destination without authentication), deployUser, deployPassword,
+ *        library (a SAPUI5 library: deployment only, the proxy serves the deploy destination) }
  * Returns { files: [[path relative to root, contents | null to remove]], scripts, warnings }.
  */
 function plan(root, a) {
+	if (a.library) {
+		if (!a.deployDestination) throw new Error("A SAPUI5 library needs a deploy destination");
+		a = { ...a, runtimeDestination: a.deployDestination };
+	}
 	const p = a.profile;
 	const prev = profileEnv(root, p);
 	const existing = prev.values;
 	const setupDeploy = !!a.deployDestination;
-	const scripts = { start: `start-btp:${p}`, deploy: `deploy-btp:${p}`, deployTest: `deploy-btp-test:${p}`, proxy: `btp-proxy:${p}` };
+	const scripts = a.library
+		? { deploy: `deploy-btp:${p}`, deployTest: `deploy-btp-test:${p}`, proxy: `btp-proxy:${p}` }
+		: { start: `start-btp:${p}`, deploy: `deploy-btp:${p}`, deployTest: `deploy-btp-test:${p}`, proxy: `btp-proxy:${p}` };
 	const sameDestination = a.runtimeDestination === a.deployDestination;
 	const envPorts = ports(root, p, existing);
 	const deployPorts = sameDestination ? envPorts.runtime : envPorts.deploy;
@@ -85,7 +92,8 @@ function plan(root, a) {
 
 	for (const script of SCRIPT_FILES) put(path.join("scripts", script), fs.readFileSync(path.join(TEMPLATES, script), "utf8"));
 
-	put(`ui5-btp-${p}.yaml`, project.runtimeYaml(project.read(path.join(root, "ui5.yaml")), {
+	// a library has nothing to run
+	put(`ui5-btp-${p}.yaml`, a.library ? null : project.runtimeYaml(project.read(path.join(root, "ui5.yaml")), {
 		port: envPorts.runtime.proxy,
 		destination: a.runtimeDestination,
 		script: scripts.start
@@ -99,6 +107,7 @@ function plan(root, a) {
 			pkg: a.abapPackage,
 			transport: a.abapTransport,
 			credentials: a.credentials,
+			library: a.library,
 			script: scripts.deploy
 		}));
 	} else {
@@ -136,7 +145,7 @@ function plan(root, a) {
 		put("ui5-deploy-btp.yaml", null);
 	}
 
-	const launch = project.launchJson(project.read(path.join(root, ".vscode", "launch.json")), p, { dropLegacy: prev.legacy });
+	const launch = a.library ? undefined : project.launchJson(project.read(path.join(root, ".vscode", "launch.json")), p, { dropLegacy: prev.legacy });
 	if (launch && launch.error) warnings.push(`${launch.error} - add a run configuration for 'npm run ${scripts.start}' yourself`);
 	else if (launch) put(path.join(".vscode", "launch.json"), launch.text);
 
@@ -149,10 +158,9 @@ function plan(root, a) {
 	const pkg = JSON.parse(pkgText);
 	pkg.scripts = { ...pkg.scripts };
 	if (prev.legacy) for (const name of ["btp-proxy", "start-btp", "deploy-btp", "deploy-btp-test"]) delete pkg.scripts[name];
-	Object.assign(pkg.scripts, {
-		[scripts.proxy]: `node scripts/btp-proxy.js --profile ${p}`,
-		[scripts.start]: `node scripts/btp.js start ${p}`
-	});
+	pkg.scripts[scripts.proxy] = `node scripts/btp-proxy.js --profile ${p}`;
+	if (a.library) delete pkg.scripts[`start-btp:${p}`];
+	else pkg.scripts[scripts.start] = `node scripts/btp.js start ${p}`;
 	if (setupDeploy) {
 		Object.assign(pkg.scripts, { [scripts.deploy]: `node scripts/btp.js deploy ${p}`, [scripts.deployTest]: `node scripts/btp.js deploy ${p} --test` });
 	} else {

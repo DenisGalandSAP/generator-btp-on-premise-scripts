@@ -9,6 +9,9 @@
  * Steps: project + environment -> Cloud Foundry endpoint + login (only when needed) -> org / space / app -> runtime + optional
  * deploy destination -> deploy target and credentials (only with a deploy destination; credentials when it has
  * no authentication).
+ *
+ * A SAPUI5 library has nothing to run: only the deploy destination is asked, and it gets deploy-btp:<name> /
+ * btp-proxy:<name> without start-btp:<name>.
  */
 const Generator = require("yeoman-generator");
 const path = require("path");
@@ -19,7 +22,7 @@ const regions = require("./lib/regions");
 const setup = require("./lib/setup");
 
 const STEPS = {
-	project: { name: "Project", description: "SAPUI5 or SAP Fiori elements project to add the BTP destination scripts to" },
+	project: { name: "Project", description: "SAPUI5 / SAP Fiori elements app or SAPUI5 library to add the BTP destination scripts to" },
 	endpoint: { name: "Cloud Foundry Endpoint", description: "Region of the subaccount the environment lives in (asked when not logged in, the session expired or another region was chosen)" },
 	login: { name: "Cloud Foundry Login", description: "Log on to the Cloud Foundry environment of the subaccount" },
 	target: { name: "Cloud Foundry Target", description: "Org and space of the CF app the local proxy tunnels through (bound to the destination and connectivity services, SSH enabled) - picked automatically when there is only one, created when there is none" },
@@ -79,7 +82,7 @@ module.exports = class extends Generator {
 				name: "projectPath",
 				message: "Project folder",
 				default: this._defaultProjectPath(),
-				guiOptions: { type: "folder-browser", mandatory: true, hint: "Root folder of the app (contains package.json, ui5.yaml and webapp/manifest.json)" },
+				guiOptions: { type: "folder-browser", mandatory: true, hint: "Root folder of the app (contains package.json, ui5.yaml and webapp/manifest.json) or of the library" },
 				validate: (value) => {
 					const info = project.inspect(value);
 					return info.error || true;
@@ -88,7 +91,7 @@ module.exports = class extends Generator {
 			this._label("projectInfo", (a) => {
 				const info = project.inspect(a.projectPath);
 				if (info.error) return "";
-				const notes = [`${info.kind} app '${info.id}'`];
+				const notes = [info.library ? `${info.kind} '${info.id}' (deployment only)` : `${info.kind} app '${info.id}'`];
 				if (!info.hasBuildScript) notes.push("WARNING: package.json has no 'build' script, deploy-btp needs one");
 				const existing = project.profiles(info.root);
 				if (existing.length) notes.push(`environments set up: ${existing.join(", ")}`);
@@ -129,7 +132,7 @@ module.exports = class extends Generator {
 		const prev = this._profileEnv(this.project.root, this.profile);
 		this.existingEnv = prev.values;
 		this.cfSession = answers.cfSession || CURRENT_SESSION;
-		if (!this.isGui) this.log(`${this.project.kind} app '${this.project.id}', environment '${this.profile}'`);
+		if (!this.isGui) this.log(`${this.project.kind}${this.project.library ? "" : " app"} '${this.project.id}', environment '${this.profile}'`);
 	}
 
 	_profileEnv(root, profile) {
@@ -405,6 +408,7 @@ module.exports = class extends Generator {
 
 	async _promptDestinations() {
 		const prev = this.existingEnv;
+		const library = !!this.project.library;
 		// destinations of the existing ui5.yaml / ui5-deploy.yaml, used when .env has none yet
 		const deployDest = project.deployDefaults(this.project.root, this.profile).destination;
 		const runtimeDests = project.runtimeDestinations(this.project.root);
@@ -425,13 +429,15 @@ module.exports = class extends Generator {
 				message: "Runtime destination (npm run start-btp)",
 				choices: () => this._destinationChoices(),
 				default: () => this._knownDestination(prev.BTP_DESTINATION, ...runtimeDests, deployDest),
+				when: () => !library,
 				guiOptions: { mandatory: true, hint: "OData / backend calls of the running app go through this destination" },
 				validate: validateDestination
 			},
-			this._label("runtimeAuthInfo", (a) => describe(a.runtimeDestination, "Runtime")),
+			this._label("runtimeAuthInfo", (a) => describe(a.runtimeDestination, "Runtime"), () => !library),
 			{
 				type: "confirm",
 				name: "setupDeploy",
+				when: () => !library,
 				message: "Also deploy through a BTP destination (npm run deploy-btp)",
 				// off only when an earlier run left it out
 				default: !(prev.BTP_DESTINATION && !prev.BTP_DEPLOY_DESTINATION),
@@ -449,8 +455,10 @@ module.exports = class extends Generator {
 			},
 			this._label("deployAuthInfo", (a) => describe(a.deployDestination, "Deploy"), (a) => a.setupDeploy !== false)
 		]);
-		this.setupDeploy = answers.setupDeploy !== false;
-		await this._check(validateDestination(answers.runtimeDestination));
+		this.setupDeploy = library || answers.setupDeploy !== false;
+		// a library has no runtime: its proxy serves the deploy destination
+		if (library) answers.runtimeDestination = answers.deployDestination;
+		else await this._check(validateDestination(answers.runtimeDestination));
 		if (this.setupDeploy) await this._check(validateDestination(answers.deployDestination));
 		else delete answers.deployDestination;
 		Object.assign(this.answers, answers);
@@ -551,7 +559,8 @@ module.exports = class extends Generator {
 			cfApi: this.cfStatus.api,
 			sso: this.loginSso,
 			deployDestination: this.setupDeploy ? a.deployDestination : undefined,
-			credentials: !!this.needsCredentials
+			credentials: !!this.needsCredentials,
+			library: !!this.project.library
 		});
 		for (const [file, contents] of result.files) {
 			const target = path.join(this.project.root, file);
@@ -579,12 +588,12 @@ module.exports = class extends Generator {
 		const pad = (name) => `  npm run ${name}`.padEnd(36);
 		this.log("");
 		this.log(`BTP destination scripts for environment '${this.profile}' added to ${this.project.root}`);
-		this.log(`${pad(s.start)}run the app through ${a.runtimeDestination}`);
+		if (s.start) this.log(`${pad(s.start)}run the app through ${a.runtimeDestination}`);
 		if (this.setupDeploy) {
 			this.log(`${pad(s.deploy)}build + deploy through ${a.deployDestination}`);
 			this.log(`${pad(s.deployTest)}same, test mode`);
 		}
-		this.log(`${pad(s.proxy)}only the proxy (runtime destination)`);
+		this.log(`${pad(s.proxy)}only the proxy (${s.start ? "runtime" : "deploy"} destination)`);
 		this.log(`The scripts point cf at ${this.cfStatus.api} ${a.org}/${a.space} themselves (cf login in the terminal when needed).`);
 	}
 };
