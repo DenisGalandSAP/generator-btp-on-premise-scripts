@@ -17,9 +17,19 @@
  *        BTP_PROXY_PORT (5050), BTP_TUNNEL_PORT (20003)   overridden by --port / --tunnel-port
  *        BTP_PROXY_USER / BTP_PROXY_PWD (optional) - Basic auth if the destination has no auth and the
  *        request has none (USR / SAP_PWD are the deploy credentials, not used here)
+ *        BTP_PROXY_TLS_PORT (optional, overridden by --tls-port) - also listen on https://127.0.0.1:<port>, for ABAP
+ *        Development Tools, which only accept https. Uses localhost.crt / localhost.key in BTP_PROXY_TLS_DIR
+ *        (default ~/.config/btp-proxy), created by `btp-on-premise-setup adt-cert`.
+ *
+ * The ssh tunnel is reopened when Cloud Foundry drops it, after logging in again if the session has expired (see
+ * ensureCfTarget in btp-env.js; a rejected password is never tried twice).
  */
+const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const net = require("net");
+const os = require("os");
+const path = require("path");
 const { execFileSync, spawn } = require("child_process");
 const { loadProfile, ensureCfTarget, cf, cfCommand } = require("./btp-env");
 
@@ -38,6 +48,8 @@ const APP = process.env.BTP_APP;
 const DESTINATION = arg("destination") || process.env.BTP_DESTINATION;
 const PORT = Number(arg("port") || process.env.BTP_PROXY_PORT || 5050);
 const TUNNEL_PORT = Number(arg("tunnel-port") || process.env.BTP_TUNNEL_PORT || 20003);
+const TLS_PORT = Number(arg("tls-port") || process.env.BTP_PROXY_TLS_PORT || 0);
+const TLS_DIR = process.env.BTP_PROXY_TLS_DIR || path.join(os.homedir(), ".config", "btp-proxy");
 if (!APP || !DESTINATION) {
 	console.error(`[btp-proxy] BTP_APP and BTP_DESTINATION must be set (${PROFILE ? `.env.${PROFILE}` : ".env"}) - run the 'BTP On-Premise Access' generator again`);
 	process.exit(1);
@@ -121,13 +133,39 @@ async function main() {
 	const proxyHost = connCreds.onpremise_proxy_host;
 	const proxyPort = connCreds.onpremise_proxy_http_port || connCreds.onpremise_proxy_port;
 	console.log(`[btp-proxy] opening ssh tunnel 127.0.0.1:${TUNNEL_PORT} -> ${proxyHost}:${proxyPort} via '${APP}'...`);
-	const tunnel = spawn(...cfCommand(["ssh", APP, "-N", "-L", `127.0.0.1:${TUNNEL_PORT}:${proxyHost}:${proxyPort}`], { stdio: "inherit" }));
-	tunnel.on("exit", (code) => {
-		console.error(`[btp-proxy] ssh tunnel exited (${code})`);
-		process.exit(1);
-	});
+	// Cloud Foundry drops idle or long ssh sessions now and then: reopen the tunnel with a backoff instead of
+	// exiting, so the listeners stay up (requests while it is down get a 502). A session that expired meanwhile
+	// is renewed first when the environment has a user and password variable.
+	let tunnel;
+	let retryDelay = 2000;
+	let stopping = false;
+	const openTunnel = () => {
+		const startedAt = Date.now();
+		tunnel = spawn(...cfCommand(["ssh", APP, "-N", "-L", `127.0.0.1:${TUNNEL_PORT}:${proxyHost}:${proxyPort}`], { stdio: "inherit" }));
+		tunnel.on("exit", (code) => {
+			if (stopping) return;
+			if (Date.now() - startedAt > 60000) retryDelay = 2000;
+			console.error(`[btp-proxy] ssh tunnel exited (${code}), reopening in ${retryDelay / 1000}s`);
+			setTimeout(async () => {
+				try {
+					ensureCfTarget({ log: (msg) => console.log(`[btp-proxy] ${msg}`) });
+				} catch (err) {
+					console.error(`[btp-proxy] ${err.message}`);
+				}
+				openTunnel();
+				try {
+					await waitForPort(TUNNEL_PORT, 60000);
+					console.log("[btp-proxy] ssh tunnel ready again");
+				} catch (err) {
+					console.error(`[btp-proxy] ${err.message}`);
+				}
+			}, retryDelay);
+			retryDelay = Math.min(retryDelay * 2, 30000);
+		});
+	};
+	openTunnel();
 	const stop = (code = 0) => {
-		tunnel.removeAllListeners("exit");
+		stopping = true;
 		// on Windows cf is often a shim (e.g. chocolatey) - kill the whole tree so no tunnel is left behind
 		if (process.platform === "win32") {
 			try { execFileSync("taskkill", ["/pid", String(tunnel.pid), "/T", "/F"], { stdio: "ignore" }); } catch (e) { /* already gone */ }
@@ -177,11 +215,18 @@ async function main() {
 		return cookies;
 	};
 
-	http.createServer(async (req, res) => {
+	const handler = async (req, res) => {
 		// used by scripts/btp.js to tell a running btp-proxy from anything else on the port
 		if (req.url === "/__btp-proxy/health") {
 			res.writeHead(200, { "content-type": "application/json" });
-			res.end(JSON.stringify({ profile: PROFILE, app: APP, destination: DESTINATION, port: PORT, tunnelPort: TUNNEL_PORT }));
+			res.end(JSON.stringify({ profile: PROFILE, app: APP, destination: DESTINATION, port: PORT, tunnelPort: TUNNEL_PORT, tlsPort: TLS_PORT || undefined, pid: process.pid }));
+			return;
+		}
+		// ABAP Development Tools probe this first; the Cloud Connector usually does not expose /sap/public and
+		// answers 403, which ADT takes as a failed logon. 404 tells it the system has no virtual host mapping.
+		if (req.url.split("?")[0] === "/sap/public/bc/icf/virtualhost") {
+			res.writeHead(404);
+			res.end();
 			return;
 		}
 		try {
@@ -236,7 +281,18 @@ async function main() {
 			res.writeHead(500);
 			res.end(`btp-proxy: ${err.message}`);
 		}
-	}).listen(PORT, "127.0.0.1", () => console.log(`[btp-proxy] listening on http://127.0.0.1:${PORT}`));
+	};
+	http.createServer(handler).listen(PORT, "127.0.0.1", () => console.log(`[btp-proxy] listening on http://127.0.0.1:${PORT}`));
+	if (TLS_PORT) {
+		const certFile = path.join(TLS_DIR, "localhost.crt");
+		const keyFile = path.join(TLS_DIR, "localhost.key");
+		if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) {
+			console.error(`[btp-proxy] no https listener: ${certFile} / localhost.key not found - create them with: npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup adt-cert`);
+		} else {
+			https.createServer({ cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) }, handler)
+				.listen(TLS_PORT, "127.0.0.1", () => console.log(`[btp-proxy] listening on https://127.0.0.1:${TLS_PORT}`));
+		}
+	}
 }
 
 main().catch((err) => {

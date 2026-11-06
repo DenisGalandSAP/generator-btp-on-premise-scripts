@@ -1,8 +1,9 @@
 # @scodigis/generator-btp-on-premise-scripts
 
 A Yeoman generator, shown as "BTP On-Premise Access" in the Template Wizard. It lets a SAPUI5 or SAP Fiori
-elements app run and deploy from a local machine through on-premise SAP BTP destinations. The same setup is
-available as a [Claude Code plugin](#claude-code-plugin).
+elements app run and deploy from a local machine through on-premise SAP BTP destinations, and gives ABAP
+Development Tools and ADT MCP servers the same access (see [ABAP development](#abap-development)). It runs on
+Windows, macOS and Linux. The same setup is available as a [Claude Code plugin](#claude-code-plugin).
 
 The app's backend calls go to a local proxy (`scripts/btp-proxy.js`). The proxy reads the destination and
 connectivity service keys from the environment of a Cloud Foundry app and opens `cf ssh -L` to the
@@ -53,9 +54,11 @@ ones. If `cf enable-ssh` fails, SSH is disabled for the space, and a Space Manag
    chose another region. Pick the region from the list of SAP BTP Cloud Foundry regions or enter an API
    endpoint. SAP has no public API for the regions, so the list comes from the source of the SAP Help page
    [Regions and API Endpoints Available for the Cloud Foundry Environment](https://help.sap.com/docs/btp/sap-business-technology-platform/regions-and-api-endpoints-available-for-cloud-foundry-environment)
-   on GitHub, with a built-in copy for when GitHub cannot be reached. You then log in with an SSO passcode
-   (the wizard links to the passcode page) or with user and password, plus an identity provider origin if
-   you use a custom one.
+   on GitHub, with a built-in copy for when GitHub cannot be reached. You then log in with user and
+   password from an environment variable (you give the user and the variable's name, e.g. `CF_PASSWORD`; both
+   are kept in `.env.<env>` so the scripts can log in again on their own), with an SSO passcode (the wizard
+   links to the passcode page), or with a password typed for this one login. Add an identity provider origin if
+   you use a custom one; it is kept as `BTP_CF_ORIGIN`.
 3. Cloud Foundry Target: org, space, and an app bound to both a destination and a connectivity service
    instance, with SSH enabled. If the space has exactly one such app, the wizard picks it. If it has none,
    the wizard offers to create `btp-tunnel` (see [First-time setup](#first-time-setup)).
@@ -70,6 +73,31 @@ ones. If `cf enable-ssh` fails, SSH is disabled for the space, and a Space Manag
    destination has `NoAuthentication`, the wizard asks for the ABAP user and password and writes them to
    `.env.<env>` (`USR` / `SAP_PWD`).
 
+## ABAP development
+
+The same proxy also serves ABAP Development Tools (VS Code or Eclipse) and ADT MCP servers such as vsp, when the
+Cloud Connector exposes `/sap/bc/adt` for the system. Pick "ABAP development" in the wizard's first step (or
+`--abap` in the command-line tool) and choose a folder of its own, without `ui5.yaml`: a `package.json` is created
+if it has none. Each environment (one per system and client, e.g. `d01-100`) gets:
+
+- `npm run btp-proxy:<env>`: the proxy on `http://127.0.0.1:<port>` and `https://127.0.0.1:<port + 393>`. ADT only
+  accepts https, and the proxy answers its `/sap/public/bc/icf/virtualhost` probe itself, because the Cloud
+  Connector usually blocks `/sap/public`;
+- `scripts/btp-mcp.js <env> -- <command>`: starts the proxy in the background when none runs, then the command,
+  for an MCP server that Claude Code starts without a terminal.
+
+The https listener needs a localhost certificate that the ADT Java runtime trusts:
+
+```bash
+npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup adt-cert
+```
+
+It creates `~/.config/btp-proxy/localhost.crt` once and imports it into the JRE of ABAP Development Tools for VS
+Code. For Eclipse it prints the `keytool` commands for the bundled JRE (run them with Eclipse closed). Redo after
+an extension or Eclipse update. Then add the system as `https://127.0.0.1:<port + 393>`: a destination in VS Code
+ADT, an ABAP Cloud Project in Eclipse. `btp-on-premise-setup adt-mcp` prints the `claude mcp add` command for a
+vsp server behind the proxy.
+
 ## Environments
 
 Each run of the generator sets up one environment. Run it again with a new name (`qual`, `prod`…) to add
@@ -78,8 +106,12 @@ endpoint, org, space, tunnel app, destinations, deploy target and credentials, s
 subaccount in eu10 and `prod` in another subaccount in eu20.
 
 Before starting a proxy, the scripts point the cf CLI at the environment. If only the org or space differs,
-they run `cf target`. If the API endpoint differs or the session has expired, they start `cf login` in the
-terminal, with `--sso` when the environment was set up with an SSO passcode. This changes your global cf
+they run `cf target`. If the API endpoint differs or the session has expired, they log in again. With
+a user and its password variable (`BTP_CF_USER` and `BTP_CF_PASSWORD_ENV` in `.env.<env>`, else `CF_USERNAME`
+and `CF_PASSWORD`) set, they run `cf auth` on their own (with `--origin` when `.env.<env>` has `BTP_CF_ORIGIN`), so a proxy started in the background keeps working too. An environment set
+up with single sign-on never uses them. Otherwise they start
+`cf login` in the terminal, with `--sso` when the environment was set up with an SSO passcode. Keep the two
+variables in your shell profile or a secrets file it loads, never in a file of the project. This changes your global cf
 target, so you cannot start two environments on different API endpoints at the same moment: start one, wait
 until its proxy is up, then start the other. Environments on the same endpoint can run side by side because
 each gets its own ports (5050 / 20003 and 5051 / 20004 for the first, then 2 higher for each further one).
@@ -128,27 +160,16 @@ run `yo @scodigis/btp-on-premise-scripts` (this needs `npm i -g yo`).
 
 ## Claude Code plugin
 
-The plugin `btp-on-premise-access` lets Claude Code go through the same steps in a conversation: it asks for the
-project, environment, region, org, space, app and destinations, and writes the same files.
+The plugin `btp-localhost-on-premise-access` lets Claude Code go through the same steps in a conversation and
+start the result. It lives in its own repository, the Scodigis plugin marketplace:
+[DenisGalandSAP/scodigis-claude-plugins](https://github.com/DenisGalandSAP/scodigis-claude-plugins).
 
 ```text
-/plugin install btp-on-premise-access --marketplace DenisGalandSAP/generator-btp-on-premise-scripts
+/plugin marketplace add DenisGalandSAP/scodigis-claude-plugins
+/plugin install btp-localhost-on-premise-access@scodigis
 ```
 
-On Claude Code versions before 2.1.275, add the marketplace first:
-
-```text
-/plugin marketplace add DenisGalandSAP/generator-btp-on-premise-scripts
-/plugin install btp-on-premise-access@scodigis
-```
-
-Then ask, for example, "set up this app to run through our BTP destination for dev". The plugin calls the
-command-line tool below through `npx`, so it needs Node.js 22 or later and the cf CLI, but no global install.
-Claude never asks for passwords in the chat: a password login happens in your own terminal, and the ABAP
-password for a deploy destination without authentication goes into `.env.<env>` (`SAP_PWD`) by your hand.
-
-The plugin lives in [`claude-plugin/`](claude-plugin), the marketplace in
-[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
+It calls the command-line tool below through `npx`, pinned to an exact version of this package.
 
 ## Command-line tool
 
@@ -190,15 +211,11 @@ npm run pack:check                # check the file list that will be published
 npm publish                       # runs npm test first (prepublishOnly); publishConfig makes it public
 ```
 
-## Release (Claude Code plugin)
+## Release order
 
-The marketplace is this GitHub repository, so pushing to `main` publishes the plugin. Keep the version in
-`claude-plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` equal to `package.json`, and
-publish to npm first. The skill runs the exact version `@scodigis/generator-btp-on-premise-scripts@<version>`
-(the Anthropic directory rejects ranges), so update the pin in `claude-plugin/skills/btp-on-premise-access/SKILL.md`
-on each release. Check the manifests with `claude plugin validate .` and
-`claude plugin validate --strict ./claude-plugin` before pushing. Users get the new version with
-`/plugin marketplace update scodigis`.
+The plugin in [scodigis-claude-plugins](https://github.com/DenisGalandSAP/scodigis-claude-plugins) runs an exact
+version of this package (`@scodigis/generator-btp-on-premise-scripts@<version>`). Publish the package to npm
+first, then update the pin in the plugin's skills and push the plugin.
 
 ## License
 

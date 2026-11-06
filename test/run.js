@@ -44,6 +44,11 @@ Object.assign(cf, {
 		session.loggedOut = false;
 		session.api = api;
 	},
+	loginWithPassword: async (api, user, password, origin) => {
+		session.logins.push(["pwd", api, user, password, origin]);
+		session.loggedOut = false;
+		session.api = api;
+	},
 	orgs: async () => [{ name: "my-org", guid: "o1" }],
 	spaces: async () => [{ name: "dev", guid: "s1" }, { name: "qual", guid: "s2" }],
 	boundApps: async () => space.apps,
@@ -102,6 +107,32 @@ async function cli() {
 	assert.ok(!JSON.stringify(dests).includes("s3cret"), "no destination password in the output");
 	await assert.rejects(commands.destinations({ org: "my-org", space: "dev", app: "nope" }), /not bound/);
 
+	// login without a passcode: cf auth with CF_USERNAME / CF_PASSWORD, never printed
+	const saved = { u: process.env.CF_USERNAME, p: process.env.CF_PASSWORD };
+	delete process.env.CF_USERNAME;
+	delete process.env.CF_PASSWORD;
+	assert.strictEqual((await commands.status({})).envCredentials, false);
+	await assert.rejects(commands.login({ api: "https://api.cf.eu10.hana.ondemand.com" }), /--user/);
+	await assert.rejects(commands.login({ api: "https://api.cf.eu10.hana.ondemand.com", user: "me@example.org", "password-env": "EP_PW" }), /EP_PW is not set/);
+	process.env.EP_PW = "ep-secret";
+	await commands.login({ api: "https://api.cf.eu10.hana.ondemand.com", user: "ep@example.org", "password-env": "EP_PW" });
+	assert.deepStrictEqual(session.logins.pop(), ["pwd", "https://api.cf.eu10.hana.ondemand.com", "ep@example.org", "ep-secret", ""]);
+	const stEp = await commands.status({ user: "ep@example.org", "password-env": "EP_PW" });
+	assert.deepStrictEqual([stEp.envUser, stEp.passwordEnv, stEp.passwordSet], ["ep@example.org", "EP_PW", true]);
+	assert.ok(!JSON.stringify(stEp).includes("ep-secret"), "no password in the status");
+	delete process.env.EP_PW;
+	process.env.CF_USERNAME = "me@example.org";
+	process.env.CF_PASSWORD = "pw-from-env";
+	const st = await commands.status({});
+	assert.strictEqual(st.envCredentials, true);
+	assert.strictEqual(st.envUser, "me@example.org");
+	assert.ok(!JSON.stringify(st).includes("pw-from-env"), "no password in the status");
+	await commands.login({ api: "https://api.cf.eu10.hana.ondemand.com/", origin: " sap.custom " });
+	assert.deepStrictEqual(session.logins.pop(), ["pwd", "https://api.cf.eu10.hana.ondemand.com", "me@example.org", "pw-from-env", "sap.custom"]);
+	if (saved.u === undefined) delete process.env.CF_USERNAME; else process.env.CF_USERNAME = saved.u;
+	if (saved.p === undefined) delete process.env.CF_PASSWORD; else process.env.CF_PASSWORD = saved.p;
+	session.api = undefined;
+
 	const project = copyProject();
 	const args = { project, env: "dev", org: "my-org", space: "dev", app: "my-srv", destination: "SYS_RUNTIME", "deploy-destination": "SYS_DEPLOY", bsp: "zfixture", package: "zfixture", transport: "sysk900001", client: "100", "deploy-user": "DEPLOYER", sso: true };
 	const dry = await commands.apply({ ...args, "dry-run": true });
@@ -143,6 +174,33 @@ async function cli() {
 	assert.strictEqual(libEnv.BTP_DESTINATION, "SYS_RUNTIME");
 	assert.strictEqual(libEnv.BTP_DEPLOY_DESTINATION, "SYS_RUNTIME");
 	assert.strictEqual(libEnv.BTP_DEPLOY_PROXY_PORT, undefined);
+
+	// ABAP development: any folder (no package.json yet), the proxy with an https port and btp-mcp.js, nothing else
+	const abapDir = fs.mkdtempSync(path.join(os.tmpdir(), "btp-abap-"));
+	await assert.rejects(commands.apply({ project: abapDir, env: "d01", org: "my-org", space: "dev", app: "my-srv", destination: "SYS_RUNTIME" }), /No package.json/);
+	assert.match((await commands.inspect({ project: lib, abap: true })).error, /SAPUI5 project/);
+	const abapArgs = { project: abapDir, env: "d01", org: "my-org", space: "dev", app: "my-srv", destination: "SYS_RUNTIME", abap: true, "cf-user": "ep@example.org", "password-env": "EP_CF_PASSWORD", "no-sso": true };
+	await assert.rejects(commands.apply({ ...abapArgs, "deploy-destination": "SYS_DEPLOY" }), /no deployment/);
+	const abapResult = await commands.apply(abapArgs);
+	assert.deepStrictEqual(abapResult.scripts, { proxy: "npm run btp-proxy:d01" });
+	assert.deepStrictEqual(abapResult.written.sort(), [".env.d01", ".gitignore", "package.json", "scripts/btp-env.js", "scripts/btp-mcp.js", "scripts/btp-proxy.js"].map((f) => f.replace(/\//g, path.sep)).sort());
+	const abapEnv = parseEnv(fs.readFileSync(path.join(abapDir, ".env.d01"), "utf8"));
+	assert.deepStrictEqual([abapEnv.BTP_PROXY_PORT, abapEnv.BTP_PROXY_TLS_PORT, abapEnv.BTP_CF_USER, abapEnv.BTP_CF_PASSWORD_ENV], ["5050", "5443", "ep@example.org", "EP_CF_PASSWORD"]);
+	const abapPkg = JSON.parse(fs.readFileSync(path.join(abapDir, "package.json"), "utf8"));
+	assert.deepStrictEqual(abapPkg["btp-on-premise"], { kind: "abap" });
+	assert.deepStrictEqual(abapPkg.scripts, { "btp-proxy:d01": "node scripts/btp-proxy.js --profile d01" });
+	// found again without --abap, a second system gets the next ports
+	const abapInfo = await commands.inspect({ project: abapDir });
+	assert.ok(abapInfo.abap && abapInfo.environments.includes("d01"));
+	await commands.apply({ ...abapArgs, env: "d01-100", abap: undefined });
+	const abapEnv2 = parseEnv(fs.readFileSync(path.join(abapDir, ".env.d01-100"), "utf8"));
+	assert.deepStrictEqual([abapEnv2.BTP_PROXY_PORT, abapEnv2.BTP_PROXY_TLS_PORT], ["5052", "5445"]);
+	// the MCP command: the launcher starts the proxy, vsp gets the http port and a placeholder password
+	const mcp = await commands["adt-mcp"]({ project: abapDir, env: "d01", vsp: "/opt/vsp", user: "dgaland", client: "300", "read-only": true });
+	assert.deepStrictEqual(mcp.command, ["claude", "mcp", "add", "-s", "local", "abap-adt-d01", "--", "node", path.join(abapDir, "scripts", "btp-mcp.js"), "d01", "--",
+		"/opt/vsp", "--url", "http://127.0.0.1:5050", "--user", "DGALAND", "--password", "via-destination", "--client", "300", "--read-only"]);
+	assert.strictEqual(mcp.https, "https://127.0.0.1:5443");
+	await assert.rejects(commands["adt-mcp"]({ project: lib, env: "dev", vsp: "x", user: "u" }), /not set up for ABAP/);
 	console.log("OK CLI (bin/btp-setup.js)");
 }
 
@@ -365,6 +423,24 @@ api.cf.eu10-002.hana.ondemand.com
 		}
 	);
 	session.api = undefined;
+	session.loggedOut = true;
+	process.env.CF_USERNAME = "me@example.org";
+	process.env.CF_PASSWORD = "pw-from-env";
+	await scenario(
+		"expired cf session, login with CF_USERNAME / CF_PASSWORD",
+		{ cfRegion: "https://api.cf.eu20.hana.ondemand.com", cfLoginMethod: "env", cfUser: "ep@example.org", cfPasswordEnv: "CF_PASSWORD", cfOrigin: "sap.custom", runtimeDestination: "SYS_RUNTIME", setupDeploy: false },
+		(read, env) => {
+			assert.deepStrictEqual(session.logins.pop(), ["pwd", "https://api.cf.eu20.hana.ondemand.com", "ep@example.org", "pw-from-env", "sap.custom"]);
+			assert.strictEqual(env.BTP_CF_ORIGIN, "sap.custom");
+			assert.strictEqual(env.BTP_CF_USER, "ep@example.org");
+			assert.strictEqual(env.BTP_CF_PASSWORD_ENV, "CF_PASSWORD");
+			assert.strictEqual(env.BTP_CF_SSO, undefined);
+			assert.ok(!read(".env.dev").includes("pw-from-env"), "no cf password in .env");
+		}
+	);
+	delete process.env.CF_USERNAME;
+	delete process.env.CF_PASSWORD;
+	session.api = undefined;
 	space.apps = [{ name: "other-srv", guid: "a0" }, { name: "my-srv", guid: "a1" }];
 	await scenario(
 		"several bound apps, one selected",
@@ -403,6 +479,20 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.strictEqual(scripts["start-btp:dev"], undefined);
 		},
 		{ from: libFixture }
+	);
+	const abapFolder = fs.mkdtempSync(path.join(os.tmpdir(), "btp-abap-src-"));
+	await scenario(
+		"ABAP development folder, proxy with https only",
+		{ purpose: "abap", profile: "d01", runtimeDestination: "SYS_RUNTIME" },
+		(read, env, dir) => {
+			assert.strictEqual(env.BTP_DESTINATION, "SYS_RUNTIME");
+			assert.strictEqual(env.BTP_PROXY_TLS_PORT, "5443");
+			assert.strictEqual(env.BTP_DEPLOY_DESTINATION, undefined);
+			assert.deepStrictEqual(JSON.parse(read("package.json")).scripts, { "btp-proxy:d01": "node scripts/btp-proxy.js --profile d01" });
+			assert.ok(fs.existsSync(path.join(dir, "scripts", "btp-mcp.js")) && !fs.existsSync(path.join(dir, "scripts", "btp.js")));
+			assert.ok(!fs.existsSync(path.join(dir, "ui5-btp-d01.yaml")) && !fs.existsSync(path.join(dir, "ui5-deploy-btp-d01.yaml")));
+		},
+		{ from: abapFolder }
 	);
 	if (isFixture) {
 		await scenario(

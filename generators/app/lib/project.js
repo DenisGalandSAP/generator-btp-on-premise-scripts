@@ -19,19 +19,43 @@ function parseUi5Yaml(text) {
 	return YAML.parseAllDocuments(text)[0];
 }
 
+// marks a folder set up for ABAP development (package.json, written by setup.plan)
+const ABAP_MARK = "btp-on-premise";
+const isAbapFolder = (pkg) => !!(pkg && pkg[ABAP_MARK] && pkg[ABAP_MARK].kind === "abap");
+
 /**
  * Checks that the folder holds a SAPUI5 freestyle or SAP Fiori elements application, or a SAPUI5 library
- * (`library: true` - nothing to run, it is only deployed).
+ * (`library: true` - nothing to run, it is only deployed), or - with `abap`, or once set up so - a folder for ABAP
+ * development (`abap: true`: only the proxy, for ABAP Development Tools and ADT MCP servers; any folder without
+ * ui5.yaml, package.json is created when missing).
  */
-function inspect(projectPath) {
+function inspect(projectPath, { abap = false } = {}) {
 	if (!projectPath) return { error: "Select the project folder" };
 	const root = path.resolve(projectPath);
 	if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return { error: `Folder not found: ${root}` };
 
 	const pkgText = read(path.join(root, "package.json"));
-	if (!pkgText) return { error: "No package.json in this folder - select the root folder of a SAPUI5 / SAP Fiori elements project" };
+	let abapPkg;
+	try {
+		abapPkg = pkgText ? JSON.parse(pkgText) : undefined;
+	} catch (e) {
+		if (abap) return { error: `package.json is not valid JSON: ${e.message}` };
+	}
+	if (abap || isAbapFolder(abapPkg)) {
+		if (read(path.join(root, "ui5.yaml"))) return { error: "This folder is a SAPUI5 project - use a folder of its own for ABAP development" };
+		return {
+			root,
+			id: (abapPkg && abapPkg.name) || path.basename(root),
+			kind: "ABAP development (ADT)",
+			abap: true,
+			pkg: abapPkg,
+			hasBuildScript: false,
+			hasProxyMiddleware: false
+		};
+	}
+	if (!pkgText) return { error: "No package.json in this folder - select the root folder of a SAPUI5 / SAP Fiori elements project, or set it up for ABAP development" };
 	const ui5Text = read(path.join(root, "ui5.yaml"));
-	if (!ui5Text) return { error: "No ui5.yaml in this folder - select the root folder of a SAPUI5 / SAP Fiori elements project" };
+	if (!ui5Text) return { error: "No ui5.yaml in this folder - select the root folder of a SAPUI5 / SAP Fiori elements project, or set it up for ABAP development" };
 
 	let pkg, ui5;
 	try {
@@ -354,4 +378,4 @@ function ensureGitignore(text, entry) {
 	return (text && !text.endsWith("\n") ? text + "\n" : text || "") + entry + "\n";
 }
 
-module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read };
+module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read, ABAP_MARK };

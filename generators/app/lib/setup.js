@@ -17,6 +17,9 @@ const PORT_KEYS = ["BTP_PROXY_PORT", "BTP_TUNNEL_PORT", "BTP_DEPLOY_PROXY_PORT",
 const LEGACY_ENV_KEYS = ["BTP_APP", "BTP_CF_ORG", "BTP_CF_SPACE", "BTP_DESTINATION", "BTP_DEPLOY_DESTINATION", ...PORT_KEYS];
 const ENV_HEADER = "SAP BTP on-premise access (@scodigis/generator-btp-on-premise-scripts)";
 const SCRIPT_FILES = ["btp-env.js", "btp-proxy.js", "btp.js"];
+const ABAP_SCRIPT_FILES = ["btp-env.js", "btp-proxy.js", "btp-mcp.js"];
+// https listener of an ABAP environment: its http port + 393 (5050 -> 5443, 5051 -> 5444...), ADT only takes https
+const TLS_OFFSET = 393;
 const TEMPLATES = path.join(__dirname, "..", "templates", "scripts");
 
 // settings of an environment - a project set up before environments existed has them in .env
@@ -65,10 +68,14 @@ function ports(root, profile, prev = profileEnv(root, profile).values) {
 
 /**
  * Files to write for an environment.
- *   a: { profile, cfApi, sso (true / false / undefined = keep), org, space, app, runtimeDestination,
+ *   a: { profile, cfApi, sso (true / false / undefined = keep), origin (cf auth --origin; "" = none, undefined = keep),
+ *        cfUser, passwordEnv (user and name of the variable holding its password for the scripts' cf auth;
+ *        "" = none, undefined = keep; single sign-on removes all three),
+ *        org, space, app, runtimeDestination,
  *        deployDestination (undefined = no deployment), abapApp, abapPackage, abapTransport, abapClient,
  *        credentials (deploy destination without authentication), deployUser, deployPassword,
- *        library (a SAPUI5 library: deployment only, the proxy serves the deploy destination) }
+ *        library (a SAPUI5 library: deployment only, the proxy serves the deploy destination),
+ *        abap (ABAP development: the proxy only, with an https listener for ADT; no deployment, no ui5 files) }
  * Returns { files: [[path relative to root, contents | null to remove]], scripts, warnings }.
  */
 function plan(root, a) {
@@ -76,11 +83,14 @@ function plan(root, a) {
 		if (!a.deployDestination) throw new Error("A SAPUI5 library needs a deploy destination");
 		a = { ...a, runtimeDestination: a.deployDestination };
 	}
+	if (a.abap) a = { ...a, deployDestination: undefined, library: false };
 	const p = a.profile;
 	const prev = profileEnv(root, p);
 	const existing = prev.values;
 	const setupDeploy = !!a.deployDestination;
-	const scripts = a.library
+	const scripts = a.abap
+		? { proxy: `btp-proxy:${p}` }
+		: a.library
 		? { deploy: `deploy-btp:${p}`, deployTest: `deploy-btp-test:${p}`, proxy: `btp-proxy:${p}` }
 		: { start: `start-btp:${p}`, deploy: `deploy-btp:${p}`, deployTest: `deploy-btp-test:${p}`, proxy: `btp-proxy:${p}` };
 	const sameDestination = a.runtimeDestination === a.deployDestination;
@@ -90,10 +100,11 @@ function plan(root, a) {
 	const warnings = [];
 	const put = (file, contents) => files.push([file, contents]);
 
-	for (const script of SCRIPT_FILES) put(path.join("scripts", script), fs.readFileSync(path.join(TEMPLATES, script), "utf8"));
+	for (const script of a.abap ? ABAP_SCRIPT_FILES : SCRIPT_FILES) put(path.join("scripts", script), fs.readFileSync(path.join(TEMPLATES, script), "utf8"));
 
-	// a library has nothing to run
-	put(`ui5-btp-${p}.yaml`, a.library ? null : project.runtimeYaml(project.read(path.join(root, "ui5.yaml")), {
+	// a library has nothing to run, an ABAP folder no UI5 app
+	if (a.abap) put(`ui5-btp-${p}.yaml`, null);
+	else put(`ui5-btp-${p}.yaml`, a.library ? null : project.runtimeYaml(project.read(path.join(root, "ui5.yaml")), {
 		port: envPorts.runtime.proxy,
 		destination: a.runtimeDestination,
 		script: scripts.start
@@ -120,10 +131,15 @@ function plan(root, a) {
 		BTP_CF_ORG: a.org,
 		BTP_CF_SPACE: a.space,
 		BTP_CF_SSO: a.sso === undefined ? existing.BTP_CF_SSO : a.sso ? "true" : undefined,
+		// the scripts' cf auth: user, identity provider and the NAME of the variable with the password (never the password)
+		BTP_CF_USER: a.sso ? undefined : a.cfUser === undefined ? existing.BTP_CF_USER : a.cfUser.trim() || undefined,
+		BTP_CF_PASSWORD_ENV: a.sso ? undefined : a.passwordEnv === undefined ? existing.BTP_CF_PASSWORD_ENV : a.passwordEnv.trim() || undefined,
+		BTP_CF_ORIGIN: a.sso ? undefined : a.origin === undefined ? existing.BTP_CF_ORIGIN : a.origin || undefined,
 		BTP_APP: a.app,
 		BTP_DESTINATION: a.runtimeDestination,
 		BTP_PROXY_PORT: envPorts.runtime.proxy,
 		BTP_TUNNEL_PORT: envPorts.runtime.tunnel,
+		BTP_PROXY_TLS_PORT: a.abap ? envPorts.runtime.proxy + TLS_OFFSET : undefined,
 		BTP_DEPLOY_DESTINATION: setupDeploy ? a.deployDestination : undefined,
 		BTP_DEPLOY_PROXY_PORT: setupDeploy && !sameDestination ? deployPorts.proxy : undefined,
 		BTP_DEPLOY_TUNNEL_PORT: setupDeploy && !sameDestination ? deployPorts.tunnel : undefined
@@ -145,7 +161,7 @@ function plan(root, a) {
 		put("ui5-deploy-btp.yaml", null);
 	}
 
-	const launch = a.library ? undefined : project.launchJson(project.read(path.join(root, ".vscode", "launch.json")), p, { dropLegacy: prev.legacy });
+	const launch = a.library || a.abap ? undefined : project.launchJson(project.read(path.join(root, ".vscode", "launch.json")), p, { dropLegacy: prev.legacy });
 	if (launch && launch.error) warnings.push(`${launch.error} - add a run configuration for 'npm run ${scripts.start}' yourself`);
 	else if (launch) put(path.join(".vscode", "launch.json"), launch.text);
 
@@ -154,12 +170,14 @@ function plan(root, a) {
 	for (const entry of [".env", envFile]) gitignore = project.ensureGitignore(gitignore, entry) ?? gitignore;
 	if (gitignore !== gitignoreBefore) put(".gitignore", gitignore);
 
-	const pkgText = project.read(path.join(root, "package.json"));
+	// an ABAP folder may start without package.json: it only carries the npm scripts and the ABAP mark
+	const pkgText = project.read(path.join(root, "package.json")) || (a.abap ? JSON.stringify({ name: path.basename(root).toLowerCase().replace(/[^a-z0-9._-]+/g, "-"), private: true }, null, 2) : undefined);
 	const pkg = JSON.parse(pkgText);
+	if (a.abap) pkg[project.ABAP_MARK] = { kind: "abap" };
 	pkg.scripts = { ...pkg.scripts };
 	if (prev.legacy) for (const name of ["btp-proxy", "start-btp", "deploy-btp", "deploy-btp-test"]) delete pkg.scripts[name];
 	pkg.scripts[scripts.proxy] = `node scripts/btp-proxy.js --profile ${p}`;
-	if (a.library) delete pkg.scripts[`start-btp:${p}`];
+	if (a.library || a.abap) delete pkg.scripts[`start-btp:${p}`];
 	else pkg.scripts[scripts.start] = `node scripts/btp.js start ${p}`;
 	if (setupDeploy) {
 		Object.assign(pkg.scripts, { [scripts.deploy]: `node scripts/btp.js deploy ${p}`, [scripts.deployTest]: `node scripts/btp.js deploy ${p} --test` });
@@ -173,4 +191,7 @@ function plan(root, a) {
 	return { files, scripts, warnings };
 }
 
-module.exports = { plan, ports, profileEnv, authProblem, PROFILE_NAME, BSP_NAME, SUPPORTED_AUTH, ENV_HEADER };
+// name of an environment variable (the password variable of the scripts' cf auth)
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+module.exports = { plan, ports, profileEnv, authProblem, PROFILE_NAME, BSP_NAME, ENV_NAME, SUPPORTED_AUTH, ENV_HEADER, TLS_OFFSET };

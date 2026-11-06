@@ -58,25 +58,94 @@ function loadProfile(profile) {
 
 // on Windows cf is often a .cmd / .bat shim and needs a shell - the command line is quoted here (org / space names may hold spaces)
 const quote = (arg) => (/^[\w\-.\/\\:=@]+$/.test(arg) ? arg : `"${String(arg).replace(/"/g, '""')}"`);
-const cfOptions = { env: { ...process.env, MSYS_NO_PATHCONV: "1" } };
-const cf = (...args) =>
+// built on each call: loadProfile() may add variables (CF_HOME...) after this module is loaded
+const cfOptions = (extraEnv = {}) => ({ env: { ...process.env, MSYS_NO_PATHCONV: "1", ...extraEnv } });
+const cfWithEnv = (extraEnv, ...args) =>
 	(isWin
-		? execSync(["cf", ...args].map(quote).join(" "), { ...cfOptions, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-		: execFileSync("cf", args, { ...cfOptions, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })).trim();
+		? execSync(["cf", ...args].map(quote).join(" "), { ...cfOptions(extraEnv), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+		: execFileSync("cf", args, { ...cfOptions(extraEnv), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })).trim();
+const cf = (...args) => cfWithEnv({}, ...args);
 /** spawn / spawnSync arguments for a cf command: spawn(...cfCommand(["ssh", app], { stdio: "inherit" })) */
 const cfCommand = (args, options = {}) =>
 	isWin
-		? [["cf", ...args].map(quote).join(" "), { ...cfOptions, ...options, shell: true }]
-		: ["cf", args, { ...cfOptions, ...options }];
+		? [["cf", ...args].map(quote).join(" "), { ...cfOptions(), ...options, shell: true }]
+		: ["cf", args, { ...cfOptions(), ...options }];
 const cfInteractive = (args) => spawnSync(...cfCommand(args, { stdio: "inherit" }));
 
 const field = (text, key) => ((new RegExp(`^${key}:\\s*(.+)$`, "im").exec(text) || [])[1] || "").trim();
 const sameApi = (a, b) => a.replace(/\/+$/, "").toLowerCase() === b.replace(/\/+$/, "").toLowerCase();
 
+// A rejected cf auth is remembered on disk, for this user and password, so that proxies started again and again
+// (several MCP servers, every new session) never lock the account. A changed password is tried once more; a
+// session that works again clears it. The marker holds a short fingerprint, never the password.
+const crypto = require("crypto");
+const os = require("os");
+const REJECTED_DIR = path.join(os.homedir(), ".cache", "btp-on-premise");
+const fingerprint = (user, password) => crypto.createHash("sha256").update(`${user}\0${password}`).digest("hex").slice(0, 8);
+const rejectedFile = (user) => path.join(REJECTED_DIR, `auth-rejected-${user.replace(/[^\w.@-]/g, "_")}`);
+function rejectedBefore({ user, password }) {
+	try {
+		const [fp, ...reason] = fs.readFileSync(rejectedFile(user), "utf8").split("\n");
+		return fp === fingerprint(user, password) ? reason.join(" ").trim() || "rejected" : undefined;
+	} catch (e) {
+		return undefined;
+	}
+}
+function rememberRejected({ user, password }, reason) {
+	try {
+		fs.mkdirSync(REJECTED_DIR, { recursive: true });
+		fs.writeFileSync(rejectedFile(user), `${fingerprint(user, password)}\n${reason}\n`, { mode: 0o600 });
+	} catch (e) { /* best effort */ }
+}
+function forgetRejected(user) {
+	if (user) fs.rmSync(rejectedFile(user), { force: true });
+}
+const lastLine = (text) => text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/^FAILED$/i.test(l)).pop() || text.trim();
+
+/**
+ * Who the scripts log in as without a terminal: BTP_CF_USER (from .env.<env>, else CF_USERNAME) and the password in
+ * the variable named by BTP_CF_PASSWORD_ENV (default CF_PASSWORD), set in the shell profile, never in a project file.
+ */
+function credentials() {
+	const user = (process.env.BTP_CF_USER || process.env.CF_USERNAME || "").trim();
+	const passwordVar = (process.env.BTP_CF_PASSWORD_ENV || "CF_PASSWORD").trim();
+	return { user, passwordVar, password: process.env[passwordVar] || "" };
+}
+
+/**
+ * Non-interactive login. cf auth reads CF_USERNAME / CF_PASSWORD from its environment (set for this one call), so
+ * the password never shows up in a process list. BTP_CF_ORIGIN names a custom identity provider (cf auth --origin).
+ */
+function loginFromEnv({ user, password }, endpoint, org, space) {
+	if (endpoint) cf("api", endpoint);
+	const origin = (process.env.BTP_CF_ORIGIN || "").trim();
+	try {
+		cfWithEnv({ CF_USERNAME: user, CF_PASSWORD: password }, "auth", ...(origin ? ["--origin", origin] : []));
+	} catch (e) {
+		// cf prints "Credentials were rejected" without echoing the password
+		const reason = lastLine((e.stderr || e.stdout || e.message).toString());
+		const err = new Error(`cf auth as ${user} failed: ${reason}`);
+		// only a refused logon counts against the account; a network error may be retried
+		err.rejected = /credentials|password|rejected|unauthorized|locked/i.test(reason);
+		err.reason = reason;
+		throw err;
+	}
+	forgetRejected(user);
+	try {
+		cf("target", "-o", org, "-s", space);
+	} catch (e) {
+		// logged in fine: another cf login would not help, the org / space or the user's role is wrong
+		const err = new Error(`logged in as ${user}, but cf target -o "${org}" -s "${space}" failed: ${(e.stderr || e.stdout || e.message).toString().trim()}`);
+		err.loggedIn = true;
+		throw err;
+	}
+}
+
 /**
  * Points the cf CLI at BTP_CF_API / BTP_CF_ORG / BTP_CF_SPACE (cf app / cf ssh work on the targeted space).
- * Another org or space is targeted directly; another API endpoint (region) or an expired session needs a
- * cf login, which is started in the terminal when `interactive` is set.
+ * Another org or space is targeted directly. Another API endpoint (region) or an expired session needs a login:
+ * with a user and its password variable set (see credentials) it runs cf auth on its own, otherwise cf login
+ * starts in the terminal when `interactive` is set.
  */
 function ensureCfTarget({ interactive = false, log = console.log } = {}) {
 	const { BTP_CF_API: api, BTP_CF_ORG: org, BTP_CF_SPACE: space } = process.env;
@@ -89,7 +158,11 @@ function ensureCfTarget({ interactive = false, log = console.log } = {}) {
 	if (!api || (current && sameApi(current, api))) {
 		try {
 			target = cf("target");
-		} catch (e) { /* not logged in */ }
+			// cf target keeps answering after the token has expired - oauth-token needs a valid (or refreshable) one
+			cf("oauth-token");
+		} catch (e) {
+			target = undefined; /* not logged in, or the session expired */
+		}
 	}
 	if (target) {
 		if (field(target, "org") === org && field(target, "space") === space) return;
@@ -102,13 +175,35 @@ function ensureCfTarget({ interactive = false, log = console.log } = {}) {
 		}
 	}
 	const endpoint = api || current;
-	const loginArgs = ["login", ...(endpoint ? ["-a", endpoint] : []), "-o", org, "-s", space, ...(process.env.BTP_CF_SSO === "true" ? ["--sso"] : [])];
-	const command = ["cf", ...loginArgs].map(quote).join(" ");
 	const why = api && current && !sameApi(current, api) ? `cf points at ${current}, this environment lives on ${api}` : "not logged in to Cloud Foundry (or the session expired)";
-	if (!interactive || !process.stdin.isTTY) throw new Error(`${why} - run: ${command}`);
+	let envError;
+	// an environment set up for single sign-on may live in another subaccount or identity provider than the
+	// global CF_USERNAME: never switch the cf session to that user (or count failed logons against it)
+	const sso = process.env.BTP_CF_SSO === "true";
+	const creds = credentials();
+	const rejected = creds.user && creds.password && !sso ? rejectedBefore(creds) : undefined;
+	if (rejected) {
+		envError = `cf auth as ${creds.user} was rejected before with this password (${rejected}), not trying again so the account does not get locked - update ${creds.passwordVar}`;
+	} else if (creds.user && creds.password && !sso) {
+		log(`${why} - logging in as ${creds.user} (password from ${creds.passwordVar})`);
+		try {
+			return loginFromEnv(creds, endpoint, org, space);
+		} catch (e) {
+			if (e.loggedIn) throw e;
+			// proxies are started again and again (tunnel drops, MCP servers, new sessions): never risk locking the account
+			if (e.rejected) rememberRejected(creds, e.reason);
+			envError = e.message;
+		}
+	}
+	const loginArgs = ["login", ...(endpoint ? ["-a", endpoint] : []), "-o", org, "-s", space, ...(sso ? ["--sso"] : [])];
+	const command = ["cf", ...loginArgs].map(quote).join(" ");
+	const missing = creds.user ? creds.passwordVar : `CF_USERNAME and ${creds.passwordVar}`;
+	const hint = envError ? `${envError} - check ${creds.passwordVar}, or run: ${command}` : sso ? `${why} - run: ${command}` : `${why} - set ${missing}, or run: ${command}`;
+	if (!interactive || !process.stdin.isTTY) throw new Error(hint);
+	if (envError) log(envError);
 	log(`${why} - logging in: ${command}`);
 	const result = cfInteractive(loginArgs);
 	if (result.status !== 0) throw new Error(`cf login failed - run: ${command}`);
 }
 
-module.exports = { ROOT, loadProfile, profiles, ensureCfTarget, cf, cfCommand };
+module.exports = { ROOT, loadProfile, profiles, ensureCfTarget, credentials, cf, cfCommand };
