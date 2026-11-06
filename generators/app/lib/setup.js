@@ -88,6 +88,7 @@ function plan(root, a) {
 	const prev = profileEnv(root, p);
 	const existing = prev.values;
 	const setupDeploy = !!a.deployDestination;
+	/** @type {{ proxy: string, start?: string, deploy?: string, deployTest?: string }} */
 	const scripts = a.abap
 		? { proxy: `btp-proxy:${p}` }
 		: a.library
@@ -172,18 +173,22 @@ function plan(root, a) {
 
 	// an ABAP folder may start without package.json: it only carries the npm scripts and the ABAP mark
 	const pkgText = project.read(path.join(root, "package.json")) || (a.abap ? JSON.stringify({ name: path.basename(root).toLowerCase().replace(/[^a-z0-9._-]+/g, "-"), private: true }, null, 2) : undefined);
+	if (pkgText === undefined) throw new Error(`No package.json in ${root}`);
 	const pkg = JSON.parse(pkgText);
 	if (a.abap) pkg[project.ABAP_MARK] = { kind: "abap" };
 	pkg.scripts = { ...pkg.scripts };
 	if (prev.legacy) for (const name of ["btp-proxy", "start-btp", "deploy-btp", "deploy-btp-test"]) delete pkg.scripts[name];
 	pkg.scripts[scripts.proxy] = `node scripts/btp-proxy.js --profile ${p}`;
-	if (a.library || a.abap) delete pkg.scripts[`start-btp:${p}`];
-	else pkg.scripts[scripts.start] = `node scripts/btp.js start ${p}`;
+	if (scripts.start) pkg.scripts[scripts.start] = `node scripts/btp.js start ${p}`;
+	else delete pkg.scripts[`start-btp:${p}`];
+	// the deploy script names exist for every kind but ABAP: remove them by name when there is no deployment
+	const deployName = `deploy-btp:${p}`;
+	const deployTestName = `deploy-btp-test:${p}`;
 	if (setupDeploy) {
-		Object.assign(pkg.scripts, { [scripts.deploy]: `node scripts/btp.js deploy ${p}`, [scripts.deployTest]: `node scripts/btp.js deploy ${p} --test` });
+		Object.assign(pkg.scripts, { [deployName]: `node scripts/btp.js deploy ${p}`, [deployTestName]: `node scripts/btp.js deploy ${p} --test` });
 	} else {
-		delete pkg.scripts[scripts.deploy];
-		delete pkg.scripts[scripts.deployTest];
+		delete pkg.scripts[deployName];
+		delete pkg.scripts[deployTestName];
 	}
 	const indent = (/^\{\r?\n([ \t]+)"/.exec(pkgText) || [])[1] || "  ";
 	put("package.json", JSON.stringify(pkg, null, indent) + "\n");

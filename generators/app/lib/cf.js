@@ -10,6 +10,12 @@ const path = require("path");
 
 const CF_ENV = { ...process.env, MSYS_NO_PATHCONV: "1", CF_COLOR: "false" };
 
+/**
+ * Runs cf and resolves with its stdout.
+ * @param {string[]} args
+ * @param {{ env?: NodeJS.ProcessEnv, input?: string, timeout?: number }} [options]
+ * @returns {Promise<string>}
+ */
 function cf(args, { env, input, timeout = 60000 } = {}) {
 	return new Promise((resolve, reject) => {
 		const child = spawn("cf", args, { env: { ...CF_ENV, ...env }, windowsHide: true });
@@ -20,7 +26,7 @@ function cf(args, { env, input, timeout = 60000 } = {}) {
 		child.stderr.on("data", (c) => (stderr += c));
 		child.on("error", (err) => {
 			clearTimeout(timer);
-			reject(err.code === "ENOENT" ? new Error("The cf CLI was not found in PATH - install it from https://github.com/cloudfoundry/cli") : err);
+			reject(/** @type {NodeJS.ErrnoException} */ (err).code === "ENOENT" ? new Error("The cf CLI was not found in PATH - install it from https://github.com/cloudfoundry/cli") : err);
 		});
 		child.on("close", (code) => {
 			clearTimeout(timer);
@@ -63,11 +69,23 @@ function readConfig() {
 }
 
 /**
+ * @typedef {object} CfStatus The cf CLI's session
+ * @property {string} [api] API endpoint the cf CLI points at
+ * @property {string} [org]
+ * @property {string} [space]
+ * @property {boolean} loggedIn the token is valid (or could be refreshed)
+ * @property {string} [user]
+ * @property {string} [error] why it is not logged in
+ */
+
+/**
  * `cf target` keeps answering after the token has expired, so check with a call that needs a valid
  * (or refreshable) token.
+ * @returns {Promise<CfStatus>}
  */
 async function loginStatus() {
 	const config = readConfig();
+	/** @type {CfStatus} */
 	const status = {
 		api: config.Target || "",
 		org: (config.OrganizationFields && config.OrganizationFields.Name) || "",
@@ -91,7 +109,7 @@ async function loginStatus() {
 async function loginUrl(api) {
 	try {
 		const res = await fetch(api.replace(/\/+$/, "") + "/", { signal: AbortSignal.timeout(10000) });
-		const json = await res.json();
+		const json = /** @type {any} */ (await res.json());
 		const href = json.links && json.links.login && json.links.login.href;
 		if (href) return href;
 	} catch (e) {
@@ -170,7 +188,7 @@ async function clientCredentialsToken(creds) {
 		body: new URLSearchParams({ grant_type: "client_credentials", client_id: creds.clientid, client_secret: creds.clientsecret })
 	});
 	if (!res.ok) throw new Error(`Token request failed: ${res.status} ${await res.text()}`);
-	return (await res.json()).access_token;
+	return /** @type {any} */ (await res.json()).access_token;
 }
 
 /**
@@ -187,7 +205,7 @@ async function destinations(appGuid) {
 	const list = async (level) => {
 		const res = await fetch(`${creds.uri}/destination-configuration/v1/${level}`, { headers: { authorization: `Bearer ${token}` } });
 		if (!res.ok) throw new Error(`Reading ${level} failed: ${res.status} ${await res.text()}`);
-		return res.json();
+		return /** @type {Promise<any[]>} */ (res.json());
 	};
 	const [subaccount, instance] = await Promise.all([list("subaccountDestinations"), list("instanceDestinations")]);
 	const byName = new Map();
@@ -248,6 +266,7 @@ async function ensureInstance(existing, offering, name, log) {
  * Creates (or completes) the "btp-tunnel" app: a 64 MB process that only sleeps, bound to a destination and a
  * connectivity instance, with SSH enabled - everything the local proxy needs. Safe to run again after a failure.
  */
+/** @param {(msg: string) => void} [log] */
 async function createTunnelApp(org, space, spaceGuid, log = () => {}) {
 	await target(org, space);
 	const existing = await serviceInstances(spaceGuid);

@@ -57,6 +57,7 @@ const USAGE = `btp-on-premise-setup <command> [options] - prints JSON
                                            the 'claude mcp add' command for an ADT MCP server (vsp) that starts
                                            the environment's proxy first (nothing is registered here)`;
 
+/** @type {import("util").ParseArgsConfig["options"]} */
 const OPTIONS = {
 	api: { type: "string" },
 	passcode: { type: "string" },
@@ -121,10 +122,12 @@ async function findApp(opts) {
 }
 
 // OnPremise HTTP destinations, without credentials
+/** @returns {Promise<Array<Record<string, any> & { supported: boolean, problem?: string }>>} */
 async function onPremiseDestinations(appGuid) {
 	return (await cf.destinations(appGuid))
 		.filter((d) => d.ProxyType === "OnPremise" && (d.Type || "HTTP") === "HTTP")
 		.map((d) => {
+			/** @type {Record<string, any>} */
 			const clean = Object.fromEntries(Object.entries(d).filter(([k]) => !SECRET.test(k)));
 			const problem = setup.authProblem(d);
 			return { ...clean, supported: !problem, ...(problem ? { problem } : {}) };
@@ -172,7 +175,7 @@ const commands = {
 	async "adt-mcp"(opts) {
 		need(opts, "project", "env", "vsp", "user");
 		const info = project.inspect(opts.project);
-		if (info.error) throw new Error(info.error);
+		if (project.failed(info)) throw new Error(info.error);
 		if (!info.abap) throw new UsageError("--project: not set up for ABAP development (apply --abap first)");
 		const env = opts.env.trim().toLowerCase();
 		const values = setup.profileEnv(info.root, env).values;
@@ -238,7 +241,7 @@ const commands = {
 	async inspect(opts) {
 		need(opts, "project");
 		const info = project.inspect(opts.project, { abap: !!opts.abap });
-		if (info.error) {
+		if (project.failed(info)) {
 			const candidates = project.findProjects([path.resolve(opts.project)]);
 			return { error: info.error, ...(candidates.length ? { candidates } : {}) };
 		}
@@ -300,7 +303,7 @@ const commands = {
 	async apply(opts) {
 		need(opts, "project", "env", "org", "space", "app");
 		const info = project.inspect(opts.project, { abap: !!opts.abap });
-		if (info.error) throw new Error(info.error);
+		if (project.failed(info)) throw new Error(info.error);
 		// an ABAP folder only gets the proxy: no deployment through it
 		if (info.abap && opts["deploy-destination"]) throw new UsageError("--deploy-destination: an ABAP folder has no deployment, give --destination only");
 		// a library has nothing to run - its one destination is the deploy destination

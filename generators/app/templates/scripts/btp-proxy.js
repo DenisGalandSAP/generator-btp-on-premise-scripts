@@ -44,7 +44,8 @@ try {
 	console.error(`[btp-proxy] ${e.message}`);
 	process.exit(1);
 }
-const APP = process.env.BTP_APP;
+// both are checked right below, the proxy exits without them
+const APP = /** @type {string} */ (process.env.BTP_APP);
 const DESTINATION = arg("destination") || process.env.BTP_DESTINATION;
 const PORT = Number(arg("port") || process.env.BTP_PROXY_PORT || 5050);
 const TUNNEL_PORT = Number(arg("tunnel-port") || process.env.BTP_TUNNEL_PORT || 20003);
@@ -66,7 +67,7 @@ async function clientCredentialsToken(creds) {
 		})
 	});
 	if (!res.ok) throw new Error(`Token request failed: ${res.status} ${await res.text()}`);
-	const json = await res.json();
+	const json = /** @type {any} */ (await res.json());
 	return { token: json.access_token, expiresAt: Date.now() + (json.expires_in - 60) * 1000 };
 }
 
@@ -116,7 +117,7 @@ async function main() {
 			headers: { authorization: `Bearer ${await destToken()}` }
 		});
 		if (!res.ok) throw new Error(`Destination '${DESTINATION}' lookup failed: ${res.status} ${await res.text()}`);
-		const json = await res.json();
+		const json = /** @type {any} */ (await res.json());
 		const authToken = (json.authTokens || []).find((t) => !t.error);
 		destCache = {
 			config: json.destinationConfiguration,

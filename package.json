@@ -43,9 +43,10 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "test": "node test/run.js && node test/scenarios.js",
+    "test": "tsc -p . && node test/run.js && node test/scenarios.js",
     "pack:check": "npm pack --dry-run",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "typecheck": "tsc -p ."
   },
   "dependencies": {
     "@sap-devx/yeoman-ui-types": "^1.25.1",
@@ -53,6 +54,9 @@
     "yeoman-generator": "^5.10.0"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/yeoman-generator": "5.2.14",
+    "typescript": "7.0.2",
     "yeoman-environment": "^3.19.3",
     "yeoman-test": "^6.3.0"
   }

@@ -24,10 +24,39 @@ const ABAP_MARK = "btp-on-premise";
 const isAbapFolder = (pkg) => !!(pkg && pkg[ABAP_MARK] && pkg[ABAP_MARK].kind === "abap");
 
 /**
+ * @typedef {object} ProjectInfo A folder the generator can set up
+ * @property {string} root absolute path
+ * @property {string} id app / library id, or the folder name of an ABAP folder
+ * @property {string} kind shown to the user
+ * @property {boolean} [library] SAPUI5 library: deployment only
+ * @property {boolean} [abap] folder for ABAP development: the proxy only
+ * @property {any} [pkg] package.json, when there is one
+ * @property {boolean} hasBuildScript
+ * @property {boolean} hasProxyMiddleware
+ * @property {string} [webapp] webapp folder of an application
+ * @property {undefined} [error]
+ */
+/**
+ * @typedef {{ error: string, root?: undefined }} ProjectError
+ */
+
+/**
  * Checks that the folder holds a SAPUI5 freestyle or SAP Fiori elements application, or a SAPUI5 library
  * (`library: true` - nothing to run, it is only deployed), or - with `abap`, or once set up so - a folder for ABAP
  * development (`abap: true`: only the proxy, for ABAP Development Tools and ADT MCP servers; any folder without
  * ui5.yaml, package.json is created when missing).
+ */
+/**
+ * Whether inspect() found nothing it can set up.
+ * @param {ProjectInfo | ProjectError} info
+ * @returns {info is ProjectError}
+ */
+const failed = (info) => !!info.error;
+
+/**
+ * @param {string} projectPath
+ * @param {{ abap?: boolean }} [options]
+ * @returns {ProjectInfo | ProjectError}
  */
 function inspect(projectPath, { abap = false } = {}) {
 	if (!projectPath) return { error: "Select the project folder" };
@@ -208,10 +237,10 @@ function runtimeYaml(ui5Text, { port, destination, script = "start-btp" }) {
 		node.comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run ${script})`;
 		return node;
 	};
-	let middlewares = doc.getIn(["server", "customMiddleware"]);
+	let middlewares = /** @type {any} */ (doc.getIn(["server", "customMiddleware"]));
 	if (!middlewares) {
 		doc.setIn(["server", "customMiddleware"], doc.createNode([]));
-		middlewares = doc.getIn(["server", "customMiddleware"]);
+		middlewares = /** @type {any} */ (doc.getIn(["server", "customMiddleware"]));
 	}
 	let proxy = middlewares.items.find((m) => YAML.isMap(m) && m.get("name") === "fiori-tools-proxy");
 	if (!proxy) {
@@ -233,6 +262,7 @@ function runtimeYaml(ui5Text, { port, destination, script = "start-btp" }) {
 
 const DEPLOY_TASK = "deploy-to-abap";
 
+/** @returns {any} the deploy-to-abap task node of a ui5 yaml document, if any */
 function findDeployTask(doc) {
 	const tasks = doc.getIn(["builder", "customTasks"]);
 	return YAML.isSeq(tasks) ? tasks.items.find((t) => YAML.isMap(t) && t.get("name") === DEPLOY_TASK) : undefined;
@@ -260,7 +290,7 @@ function deployDefaults(root, profile) {
 			const doc = parseUi5Yaml(text);
 			const task = findDeployTask(doc);
 			if (!task || !YAML.isMap(task.get("configuration"))) continue;
-			const cfg = task.get("configuration").toJS(doc); // yaml v2: a node needs its document
+			const cfg = /** @type {any} */ (task.get("configuration")).toJS(doc); // yaml v2: a node needs its document
 			const app = cfg.app || {};
 			const target = cfg.target || {};
 			if (!result.source) {
@@ -303,15 +333,16 @@ function deployYaml(root, { port, destination, client, app, pkg, transport, cred
 	const doc = parseUi5Yaml(deployText || read(path.join(root, "ui5.yaml")));
 	if (!deployText) doc.delete("server");
 
-	const target = doc.createNode({ url: `http://127.0.0.1:${port}`, ...(client ? { client: String(client) } : {}) });
+	const target = /** @type {any} */ (doc.createNode({ url: `http://127.0.0.1:${port}`, ...(client ? { client: String(client) } : {}) }));
 	target.get("url", true).comment = ` scripts/btp-proxy.js -> BTP destination ${destination} (npm run ${script})`;
 	const appNode = { name: app, package: pkg, ...(transport ? { transport } : {}) };
 
+	/** @type {any} */
 	let task = findDeployTask(doc);
 	if (!task) {
 		if (!YAML.isSeq(doc.getIn(["builder", "customTasks"]))) doc.setIn(["builder", "customTasks"], doc.createNode([]));
 		task = doc.createNode({ name: DEPLOY_TASK, afterTask: library ? "generateLibraryPreload" : "generateCachebusterInfo", configuration: {} });
-		doc.getIn(["builder", "customTasks"]).items.push(task);
+		/** @type {any} */ (doc.getIn(["builder", "customTasks"])).items.push(task);
 	}
 	if (!YAML.isMap(task.get("configuration"))) task.set("configuration", doc.createNode({}));
 	const cfg = task.get("configuration");
@@ -353,6 +384,7 @@ function parseJsonc(text) {
  */
 function launchJson(text, profile, { dropLegacy = false } = {}) {
 	const config = launchConfig(profile);
+	/** @type {{ version?: string, configurations: any[] }} */
 	let launch = { version: "0.2.0", configurations: [] };
 	if (text && text.trim()) {
 		try {
@@ -378,4 +410,4 @@ function ensureGitignore(text, entry) {
 	return (text && !text.endsWith("\n") ? text + "\n" : text || "") + entry + "\n";
 }
 
-module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read, ABAP_MARK };
+module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read, ABAP_MARK, failed };

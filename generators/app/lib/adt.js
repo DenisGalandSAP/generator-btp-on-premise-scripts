@@ -55,9 +55,10 @@ function vscodeJres() {
 		const ext = path.join(os.homedir(), base, "extensions");
 		for (const name of ls(ext).filter((n) => n.startsWith("sapse.adt-vscode-"))) {
 			// adt-ls/<os>/<ws>/<arch>/plugins/com.sap.adt.jvm.*/jre - search a few levels instead of hard-coding them
+			/** @type {Array<[string, number]>} */
 			const stack = [[path.join(ext, name, "adt-ls"), 0]];
 			while (stack.length) {
-				const [dir, depth] = stack.pop();
+				const [dir, depth] = /** @type {[string, number]} */ (stack.pop());
 				if (path.basename(dir) === "jre" && javaHome(dir)) {
 					found.push({ extension: name, jre: javaHome(dir) });
 					continue;
