@@ -9,6 +9,9 @@ const os = require("os");
 const path = require("path");
 
 const CF_ENV = { ...process.env, MSYS_NO_PATHCONV: "1", CF_COLOR: "false" };
+const isWin = process.platform === "win32";
+const CF_MISSING = "The cf CLI was not found in PATH - install it from https://github.com/cloudfoundry/cli";
+const quote = (/** @type {string} */ arg) => (/^[\w\-.\/\\:=@]+$/.test(arg) ? arg : `"${String(arg).replace(/"/g, '""')}"`);
 
 /**
  * Runs cf and resolves with its stdout.
@@ -18,7 +21,11 @@ const CF_ENV = { ...process.env, MSYS_NO_PATHCONV: "1", CF_COLOR: "false" };
  */
 function cf(args, { env, input, timeout = 60000 } = {}) {
 	return new Promise((resolve, reject) => {
-		const child = spawn("cf", args, { env: { ...CF_ENV, ...env }, windowsHide: true });
+		// on Windows cf is often a .cmd / .bat shim, which only starts through a shell: the command line is quoted
+		// like in the generated scripts (btp-env.js)
+		const child = isWin
+			? spawn(["cf", ...args].map(quote).join(" "), { env: { ...CF_ENV, ...env }, windowsHide: true, shell: true })
+			: spawn("cf", args, { env: { ...CF_ENV, ...env }, windowsHide: true });
 		let stdout = "";
 		let stderr = "";
 		const timer = setTimeout(() => child.kill(), timeout);
@@ -26,11 +33,13 @@ function cf(args, { env, input, timeout = 60000 } = {}) {
 		child.stderr.on("data", (c) => (stderr += c));
 		child.on("error", (err) => {
 			clearTimeout(timer);
-			reject(/** @type {NodeJS.ErrnoException} */ (err).code === "ENOENT" ? new Error("The cf CLI was not found in PATH - install it from https://github.com/cloudfoundry/cli") : err);
+			reject(/** @type {NodeJS.ErrnoException} */ (err).code === "ENOENT" ? new Error(CF_MISSING) : err);
 		});
 		child.on("close", (code) => {
 			clearTimeout(timer);
 			if (code === 0) return resolve(stdout.trim());
+			// through the Windows shell a missing cf is an exit code, not ENOENT
+			if (isWin && /'cf' is not recognized/.test(stderr)) return reject(new Error(CF_MISSING));
 			const output = `${stdout}\n${stderr}`.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l !== "FAILED");
 			reject(new Error(output.slice(-3).join(" ") || `cf ${args[0]} failed (${code})`));
 		});
