@@ -93,7 +93,9 @@ npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup adt-cert
 ```
 
 It creates `~/.config/btp-proxy/localhost.crt` once and imports it into the JRE of ABAP Development Tools for VS
-Code. For Eclipse it prints the `keytool` commands for the bundled JRE (run them with Eclipse closed). Redo after
+Code. For Eclipse it prints the `keytool` commands for the Java each install runs on: the one `eclipse.ini` names
+with `-vm`, else the bundled JRE. It looks for folders whose name starts with `eclipse` (`eclipse`, `eclipse-java`,
+`eclipsebare`...) and gives one command per Java, even when several installs share it. Run them with Eclipse closed. Redo after
 an extension or Eclipse update. Then add the system as `https://127.0.0.1:<port + 393>`: a destination in VS Code
 ADT, an ABAP Cloud Project in Eclipse. `btp-on-premise-setup adt-mcp` prints the `claude mcp add` command for a
 vsp server behind the proxy.

@@ -403,6 +403,22 @@ function adt() {
 		assert.match(cmd.command, /keytool\.exe" -importcert -noprompt -alias btp-proxy-localhost/);
 	}
 
+	// eclipse.ini -vm: a javaw.exe, a bin folder or a Java home, absolute or relative to the install
+	const install = isWin ? "C:\\eclipsebare" : "/opt/eclipsebare";
+	const vm = (line) => adtLib.vmJavaHome(install, `-startup\nplugins/x.jar\n-vm\n${line}\n-vmargs\n-Xmx2g\n`);
+	assert.strictEqual(adtLib.vmJavaHome(install, "-vmargs\n-Xmx2g\n"), undefined, "no -vm");
+	if (adtLib.isWsl()) {
+		assert.strictEqual(vm("C:/eclipse/plugins/justj/jre/bin/javaw.exe"), "/mnt/c/eclipse/plugins/justj/jre");
+		assert.strictEqual(vm("D:\\jdk-21\\bin"), "/mnt/d/jdk-21");
+	} else if (isWin) {
+		assert.strictEqual(vm("C:/eclipse/plugins/justj/jre/bin/javaw.exe"), "C:/eclipse/plugins/justj/jre");
+		assert.strictEqual(vm("D:\\jdk-21"), "D:\\jdk-21");
+	} else {
+		assert.strictEqual(vm("/usr/lib/jvm/java-21/bin/java"), "/usr/lib/jvm/java-21");
+		assert.strictEqual(vm("/usr/lib/jvm/java-21/bin/"), "/usr/lib/jvm/java-21");
+		assert.strictEqual(vm("jre/bin/java"), path.join(install, "jre"), "relative to the install");
+	}
+
 	if (isWin || !hasOpenssl()) {
 		// the fake keytool is a shell script: the JRE import runs on Linux / macOS (and WSL)
 		console.log(`OK adt-cert scenarios (WSL paths only${isWin ? " - JRE import is tested on Linux / macOS" : " - openssl not found"})`);
@@ -441,11 +457,22 @@ function adt() {
 	assert.notStrictEqual(fs.readFileSync(path.join(linuxJre, "imported.sha256"), "utf8"), before);
 	assert.match(fs.readFileSync(path.join(linuxJre, "keytool.log"), "utf8"), /-delete -alias btp-proxy-localhost/);
 
-	// Eclipse: found in ~/eclipse on Linux / macOS (on WSL the Windows drives are searched instead)
+	// Eclipse: found in ~/eclipse* on Linux / macOS (on WSL the Windows drives are searched instead). eclipsebare
+	// runs on another Java through eclipse.ini -vm; eclipse-java shares that Java and gets no second import
 	if (!adtLib.isWsl()) {
-		assert.deepStrictEqual(r.eclipse.map((e) => e.install), [path.join(home, "eclipse")]);
-		assert.strictEqual(r.eclipse[0].shell, "sh");
-		assert.match(r.eclipse[0].command, /keytool" -importcert -noprompt -alias btp-proxy-localhost/);
+		const ownJava = fakeJre(path.join(home, "jdk-21"));
+		for (const name of ["eclipsebare", "eclipse-java"]) {
+			fs.mkdirSync(path.join(home, name, "plugins"), { recursive: true });
+			fs.writeFileSync(path.join(home, name, "eclipse.ini"), `-startup\nplugins/x.jar\n-vm\n${ownJava}/bin/java\n-vmargs\n-Xmx2g\n`);
+		}
+		r = adtCert(home);
+		const byJre = Object.fromEntries(r.eclipse.map((e) => [e.command.includes(ownJava) ? "own" : "bundled", e]));
+		assert.deepStrictEqual(byJre.bundled.installs, [path.join(home, "eclipse")]);
+		assert.strictEqual(byJre.bundled.source, "bundled");
+		assert.deepStrictEqual(byJre.own.installs.sort(), [path.join(home, "eclipse-java"), path.join(home, "eclipsebare")]);
+		assert.strictEqual(byJre.own.source, "eclipse.ini -vm");
+		assert.strictEqual(r.eclipse.length, 2, "one import per Java");
+		assert.ok(r.eclipse.every((e) => e.shell === "sh" && /keytool" -importcert -noprompt -alias btp-proxy-localhost/.test(e.command)));
 	} else {
 		assert.ok(r.eclipse.every((e) => e.shell === "powershell"));
 	}

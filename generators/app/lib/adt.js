@@ -100,17 +100,51 @@ function trust(jre, cert) {
 	execFileSync(keytool, ["-importcert", "-noprompt", "-alias", ALIAS, "-file", cert, "-cacerts", "-storepass", STOREPASS], { stdio: ["ignore", "ignore", "pipe"] });
 }
 
-/** Eclipse installations with their bundled JustJ JREs (newest last), on Windows or seen from WSL. */
+// a Windows path (C:\x or C:/x) as WSL sees it: /mnt/c/x
+const fromWindows = (p) => {
+	const m = /^([a-zA-Z]):[\\/](.*)$/.exec(p);
+	return m ? `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}` : p;
+};
+
+/**
+ * The Java home Eclipse runs on when eclipse.ini names one with -vm (the next line: a javaw.exe, a bin folder or
+ * a Java home, absolute or relative to the install), else undefined.
+ */
+function vmJavaHome(install, ini = (() => {
+	try {
+		return fs.readFileSync(path.join(install, "eclipse.ini"), "utf8");
+	} catch (e) {
+		return "";
+	}
+})()) {
+	const lines = ini.split(/\r?\n/).map((l) => l.trim());
+	const at = lines.indexOf("-vm");
+	if (at < 0 || !lines[at + 1]) return undefined;
+	let vm = lines[at + 1];
+	if (isWsl()) vm = fromWindows(vm);
+	else if (process.platform !== "win32") vm = vm.replace(/\\/g, "/");
+	if (!path.isAbsolute(vm) && !/^[a-zA-Z]:[\\/]/.test(vm)) vm = path.join(install, vm);
+	// .../bin/javaw.exe or .../bin/java -> the Java home; .../bin -> its parent
+	if (/[\\/]bin[\\/]javaw?(\.exe)?$/i.test(vm)) vm = path.dirname(path.dirname(vm));
+	else if (/[\\/]bin[\\/]?$/i.test(vm)) vm = path.dirname(vm.replace(/[\\/]$/, ""));
+	return vm;
+}
+
+/**
+ * Eclipse installations (folders named eclipse*, e.g. eclipse, eclipse-java, eclipsebare) and the Java they run on:
+ * the one eclipse.ini names with -vm, else the bundled JustJ JRE. Windows or seen from WSL, Linux, macOS.
+ */
 function eclipseJres() {
 	const roots = [];
+	const eclipseDirs = (parent) => ls(parent).filter((n) => /^eclipse/i.test(n)).map((n) => path.join(parent, n));
 	if (process.platform === "win32") {
-		for (const drive of ["C:", "D:"]) roots.push(`${drive}\\eclipse`);
-		if (process.env.USERPROFILE) roots.push(path.join(process.env.USERPROFILE, "eclipse"));
+		for (const drive of ["C:\\", "D:\\", "E:\\"]) roots.push(...eclipseDirs(drive));
+		if (process.env.USERPROFILE) roots.push(...eclipseDirs(process.env.USERPROFILE));
 	} else if (isWsl()) {
-		for (const drive of ls("/mnt").filter((d) => /^[a-z]$/.test(d))) roots.push(`/mnt/${drive}/eclipse`);
-		for (const user of ls("/mnt/c/Users")) roots.push(`/mnt/c/Users/${user}/eclipse`);
+		for (const drive of ls("/mnt").filter((d) => /^[a-z]$/.test(d))) roots.push(...eclipseDirs(`/mnt/${drive}`));
+		for (const user of ls("/mnt/c/Users")) roots.push(...eclipseDirs(`/mnt/c/Users/${user}`));
 	} else {
-		roots.push(path.join(os.homedir(), "eclipse"), "/opt/eclipse");
+		roots.push(...eclipseDirs(os.homedir()), ...eclipseDirs("/opt"));
 		// macOS: /Applications/Eclipse*.app, ~/eclipse/<package>/Eclipse.app (Eclipse installer)
 		for (const app of ls("/Applications").filter((n) => /^eclipse.*\.app$/i.test(n))) roots.push(path.join("/Applications", app, "Contents", "Eclipse"));
 		for (const child of ls(path.join(os.homedir(), "eclipse"))) roots.push(path.join(os.homedir(), "eclipse", child, "Eclipse.app", "Contents", "Eclipse"));
@@ -122,12 +156,14 @@ function eclipseJres() {
 		for (const child of ls(root)) if (fs.existsSync(path.join(root, child, "eclipse", "plugins"))) installs.push(path.join(root, child, "eclipse"));
 	}
 	return installs.map((install) => {
+		const vm = vmJavaHome(install);
+		if (vm && fs.existsSync(vm)) return { install, jre: javaHome(vm) || vm, source: "eclipse.ini -vm" };
 		const jres = ls(path.join(install, "plugins"))
 			.filter((n) => /^org\.eclipse\.justj\.openjdk\.hotspot\.jre\.full\./.test(n) && fs.existsSync(path.join(install, "plugins", n, "jre")))
 			.sort();
 		const jre = jres.length ? path.join(install, "plugins", jres[jres.length - 1], "jre") : undefined;
 		// seen from WSL the Windows keytool.exe cannot be checked with exe(): keep the folder as is
-		return { install, jre: jre && (javaHome(jre) || jre) };
+		return { install, jre: jre && (javaHome(jre) || jre), source: "bundled" };
 	}).filter((e) => e.jre);
 }
 
@@ -175,4 +211,4 @@ function mcpCommand({ root, env, values, vsp, name, scope = "local", user, clien
 	return args;
 }
 
-module.exports = { ensureCert, vscodeJres, trusted, trust, eclipseJres, eclipseCommands, mcpCommand, tlsDir, toWindows, isWsl, ALIAS };
+module.exports = { ensureCert, vscodeJres, trusted, trust, eclipseJres, eclipseCommands, mcpCommand, tlsDir, toWindows, fromWindows, vmJavaHome, isWsl, ALIAS };

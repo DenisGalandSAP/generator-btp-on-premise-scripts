@@ -159,7 +159,12 @@ const commands = {
 			cert,
 			created,
 			vscode,
-			eclipse: adt.eclipseJres().map((e) => adt.eclipseCommands(e, cert)),
+			// several installs can run on the same Java (eclipse.ini -vm): one import each
+			eclipse: Object.values(adt.eclipseJres().reduce((byJre, e) => {
+				if (byJre[e.jre]) byJre[e.jre].installs.push(adt.eclipseCommands(e, cert).install);
+				else byJre[e.jre] = { ...adt.eclipseCommands(e, cert), installs: [adt.eclipseCommands(e, cert).install], source: e.source };
+				return byJre;
+			}, {})).map(({ install, ...rest }) => rest),
 			note: "Redo after an ADT extension or Eclipse update (new JRE folder). Eclipse must be closed for its import."
 		};
 	},
