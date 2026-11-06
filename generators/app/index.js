@@ -22,7 +22,7 @@ const regions = require("./lib/regions");
 const setup = require("./lib/setup");
 
 const STEPS = {
-	project: { name: "Project", description: "SAPUI5 / SAP Fiori elements app or SAPUI5 library to add the BTP destination scripts to" },
+	project: { name: "Project", description: "SAPUI5 / SAP Fiori elements app or SAPUI5 library, or a folder for ABAP development, to add the BTP destination scripts to" },
 	endpoint: { name: "Cloud Foundry Endpoint", description: "Region of the subaccount the environment lives in (asked when not logged in, the session expired or another region was chosen)" },
 	login: { name: "Cloud Foundry Login", description: "Log on to the Cloud Foundry environment of the subaccount" },
 	target: { name: "Cloud Foundry Target", description: "Org and space of the CF app the local proxy tunnels through (bound to the destination and connectivity services, SSH enabled) - picked automatically when there is only one, created when there is none" },
@@ -78,21 +78,32 @@ module.exports = class extends Generator {
 		const answers = await this.prompt([
 			this._label("directAccessNote", DIRECT_ACCESS_NOTE),
 			{
+				type: "list",
+				name: "purpose",
+				message: "Use",
+				choices: [
+					{ name: "SAPUI5 / SAP Fiori elements app or library: run and deploy", value: "ui5" },
+					{ name: "ABAP development: ABAP Development Tools (VS Code, Eclipse) and ADT MCP servers", value: "abap" }
+				],
+				default: "ui5",
+				guiOptions: { hint: "ABAP development needs /sap/bc/adt exposed in the Cloud Connector. Use a folder of its own for it (one per customer or system landscape), not a UI5 project" }
+			},
+			{
 				type: "input",
 				name: "projectPath",
 				message: "Project folder",
 				default: this._defaultProjectPath(),
-				guiOptions: { type: "folder-browser", mandatory: true, hint: "Root folder of the app (contains package.json, ui5.yaml and webapp/manifest.json) or of the library" },
-				validate: (value) => {
-					const info = project.inspect(value);
+				guiOptions: { type: "folder-browser", mandatory: true, hint: "Root folder of the app (contains package.json, ui5.yaml and webapp/manifest.json) or of the library; for ABAP development any folder without ui5.yaml" },
+				validate: (value, a) => {
+					const info = project.inspect(value, { abap: a.purpose === "abap" });
 					return info.error || true;
 				}
 			},
 			this._label("projectInfo", (a) => {
-				const info = project.inspect(a.projectPath);
+				const info = project.inspect(a.projectPath, { abap: a.purpose === "abap" });
 				if (info.error) return "";
-				const notes = [info.library ? `${info.kind} '${info.id}' (deployment only)` : `${info.kind} app '${info.id}'`];
-				if (!info.hasBuildScript) notes.push("WARNING: package.json has no 'build' script, deploy-btp needs one");
+				const notes = [info.abap ? `${info.kind} in '${info.id}' (proxy with https for ADT)` : info.library ? `${info.kind} '${info.id}' (deployment only)` : `${info.kind} app '${info.id}'`];
+				if (!info.hasBuildScript && !info.abap) notes.push("WARNING: package.json has no 'build' script, deploy-btp needs one");
 				const existing = project.profiles(info.root);
 				if (existing.length) notes.push(`environments set up: ${existing.join(", ")}`);
 				return notes.join(" - ");
@@ -127,12 +138,12 @@ module.exports = class extends Generator {
 				guiOptions: { hint: "Orgs of every subaccount in the same region are reachable with the current session; another region needs a login" }
 			}
 		]);
-		this.project = project.inspect(answers.projectPath);
+		this.project = project.inspect(answers.projectPath, { abap: answers.purpose === "abap" });
 		this.profile = (answers.profile || "dev").trim().toLowerCase();
 		const prev = this._profileEnv(this.project.root, this.profile);
 		this.existingEnv = prev.values;
 		this.cfSession = answers.cfSession || CURRENT_SESSION;
-		if (!this.isGui) this.log(`${this.project.kind}${this.project.library ? "" : " app"} '${this.project.id}', environment '${this.profile}'`);
+		if (!this.isGui) this.log(`${this.project.kind}${this.project.library || this.project.abap ? "" : " app"} '${this.project.id}', environment '${this.profile}'`);
 	}
 
 	_profileEnv(root, profile) {
@@ -163,6 +174,7 @@ module.exports = class extends Generator {
 	}
 
 	async _promptLogin() {
+		const prev = this.existingEnv || {};
 		const endpoint = await this.prompt([
 			this._label("loginInfo", () => {
 				if (this.cfStatus.loggedIn) return `Currently logged in to ${this.cfStatus.api} as ${this.cfStatus.user || "?"} - select the region of the subaccount of '${this.profile}'.`;
@@ -194,15 +206,18 @@ module.exports = class extends Generator {
 				name: "cfLoginMethod",
 				message: "Log in with",
 				choices: [
+					{ name: "User, password from an environment variable", value: "env" },
 					{ name: "Single sign-on (temporary passcode)", value: "sso" },
-					{ name: "User and password", value: "password" }
+					{ name: "User and password (typed here, this time only)", value: "password" }
 				],
-				default: "sso"
+				default: prev.BTP_CF_SSO === "true" ? "sso" : "env",
+				guiOptions: { hint: "With the password in an environment variable, the scripts also log in again on their own when the session expires" }
 			}
 		]);
 		const api = (endpoint.cfRegion === OTHER_ENDPOINT ? endpoint.cfApi : endpoint.cfRegion).trim().replace(/\/+$/, "");
 		if (!/^https:\/\/\S+$/.test(api)) throw new Error(`Invalid API endpoint: ${api}`);
 		const sso = endpoint.cfLoginMethod === "sso";
+		const fromEnv = endpoint.cfLoginMethod === "env";
 		const passcodeUrl = sso ? `${await cf.loginUrl(api)}/passcode` : undefined;
 
 		// validate runs again on "Next" - a passcode is single-use, so never log in twice with the same input
@@ -222,8 +237,14 @@ module.exports = class extends Generator {
 		const loginWith = (a) =>
 			sso
 				? login(`sso|${api}|${a.cfPasscode}`, () => cf.loginWithPasscode(api, a.cfPasscode.trim()))
-				: login(`pwd|${api}|${a.cfUser}|${a.cfOrigin}|${a.cfPassword}`, () =>
-					cf.loginWithPassword(api, a.cfUser.trim(), a.cfPassword, (a.cfOrigin || "").trim()));
+				: fromEnv
+					? login(`env|${api}|${a.cfUser}|${a.cfPasswordEnv}|${a.cfOrigin}`, () => {
+						const name = (a.cfPasswordEnv || "").trim();
+						if (!process.env[name]) throw new Error(`${name} is not set in the environment this wizard runs in - set it in your shell profile and restart VS Code`);
+						return cf.loginWithPassword(api, a.cfUser.trim(), process.env[name], (a.cfOrigin || "").trim());
+					})
+					: login(`pwd|${api}|${a.cfUser}|${a.cfOrigin}|${a.cfPassword}`, () =>
+						cf.loginWithPassword(api, a.cfUser.trim(), a.cfPassword, (a.cfOrigin || "").trim()));
 		const credentials = await this.prompt([
 			this._label("loginEndpoint", () => `Logging in to ${api}`),
 			{
@@ -245,21 +266,34 @@ module.exports = class extends Generator {
 				name: "cfUser",
 				message: "User (e-mail)",
 				when: () => !sso,
+				default: () => prev.BTP_CF_USER || process.env.CF_USERNAME || "",
 				guiOptions: { mandatory: true },
 				validate: required("User")
+			},
+			{
+				type: "input",
+				name: "cfPasswordEnv",
+				message: "Environment variable with the password",
+				when: () => fromEnv,
+				default: () => prev.BTP_CF_PASSWORD_ENV || "CF_PASSWORD",
+				guiOptions: { mandatory: true, hint: "Only the name is saved (.env.<env>, BTP_CF_PASSWORD_ENV), e.g. CF_PASSWORD - set the variable itself in your shell profile" },
+				validate: (v) => (setup.ENV_NAME.test((v || "").trim()) ? true : "A variable name: letters, digits and _")
 			},
 			{
 				type: "input",
 				name: "cfOrigin",
 				message: "Identity provider origin (optional)",
 				when: () => !sso,
+				default: () => prev.BTP_CF_ORIGIN || "",
+				// no login in validate here: a plain field is validated on every change, and each try would count
+				// against the account - the login runs once, after the page
 				guiOptions: { hint: "Only for a custom identity provider (cf auth --origin), e.g. 'sap.custom' - leave empty for the SAP ID service" }
 			},
 			{
 				type: "password",
 				name: "cfPassword",
 				message: "Password",
-				when: () => !sso,
+				when: () => !sso && !fromEnv,
 				guiOptions: { mandatory: true, type: "login" },
 				validate: async (password, a) => {
 					if (!password) return "Enter the password";
@@ -270,8 +304,15 @@ module.exports = class extends Generator {
 		]);
 		// not every prompt implementation runs validate
 		if (!loggedInWith) await this._check(loginWith(credentials));
-		// the scripts log in again the same way when the session expires
+		// the scripts log in again the same way when the session expires (cf auth when CF_USERNAME / CF_PASSWORD are set)
 		this.loginSso = sso;
+		// SSO drops the origin, user and password variable: they only apply to cf auth. A password typed here is
+		// not kept anywhere, so the scripts then use CF_USERNAME / CF_PASSWORD if set, else cf login in the terminal
+		// a password typed for this one login says nothing about the user the scripts log in as: keep what the
+		// environment had (user, variable and origin belong together)
+		this.loginOrigin = sso ? "" : fromEnv ? (credentials.cfOrigin || "").trim() : undefined;
+		this.loginUser = fromEnv ? credentials.cfUser.trim() : sso ? "" : undefined;
+		this.loginPasswordEnv = fromEnv ? credentials.cfPasswordEnv.trim() : sso ? "" : undefined;
 		// orgs / spaces / apps of the previous session do not apply anymore
 		this.cache = { orgs: undefined, spaces: new Map(), apps: new Map(), destinations: new Map() };
 	}
@@ -409,6 +450,7 @@ module.exports = class extends Generator {
 	async _promptDestinations() {
 		const prev = this.existingEnv;
 		const library = !!this.project.library;
+		const abap = !!this.project.abap;
 		// destinations of the existing ui5.yaml / ui5-deploy.yaml, used when .env has none yet
 		const deployDest = project.deployDefaults(this.project.root, this.profile).destination;
 		const runtimeDests = project.runtimeDestinations(this.project.root);
@@ -426,18 +468,18 @@ module.exports = class extends Generator {
 			{
 				type: "list",
 				name: "runtimeDestination",
-				message: "Runtime destination (npm run start-btp)",
+				message: abap ? "Destination of the ABAP system (ADT)" : "Runtime destination (npm run start-btp)",
 				choices: () => this._destinationChoices(),
 				default: () => this._knownDestination(prev.BTP_DESTINATION, ...runtimeDests, deployDest),
 				when: () => !library,
-				guiOptions: { mandatory: true, hint: "OData / backend calls of the running app go through this destination" },
+				guiOptions: { mandatory: true, hint: abap ? "ADT requests (/sap/bc/adt) go through this destination - it must be exposed in the Cloud Connector" : "OData / backend calls of the running app go through this destination" },
 				validate: validateDestination
 			},
 			this._label("runtimeAuthInfo", (a) => describe(a.runtimeDestination, "Runtime"), () => !library),
 			{
 				type: "confirm",
 				name: "setupDeploy",
-				when: () => !library,
+				when: () => !library && !abap,
 				message: "Also deploy through a BTP destination (npm run deploy-btp)",
 				// off only when an earlier run left it out
 				default: !(prev.BTP_DESTINATION && !prev.BTP_DEPLOY_DESTINATION),
@@ -455,7 +497,7 @@ module.exports = class extends Generator {
 			},
 			this._label("deployAuthInfo", (a) => describe(a.deployDestination, "Deploy"), (a) => a.setupDeploy !== false)
 		]);
-		this.setupDeploy = library || answers.setupDeploy !== false;
+		this.setupDeploy = !abap && (library || answers.setupDeploy !== false);
 		// a library has no runtime: its proxy serves the deploy destination
 		if (library) answers.runtimeDestination = answers.deployDestination;
 		else await this._check(validateDestination(answers.runtimeDestination));
@@ -558,9 +600,13 @@ module.exports = class extends Generator {
 			profile: this.profile,
 			cfApi: this.cfStatus.api,
 			sso: this.loginSso,
+			origin: this.loginOrigin,
+			cfUser: this.loginUser,
+			passwordEnv: this.loginPasswordEnv,
 			deployDestination: this.setupDeploy ? a.deployDestination : undefined,
 			credentials: !!this.needsCredentials,
-			library: !!this.project.library
+			library: !!this.project.library,
+			abap: !!this.project.abap
 		});
 		for (const [file, contents] of result.files) {
 			const target = path.join(this.project.root, file);
@@ -593,7 +639,15 @@ module.exports = class extends Generator {
 			this.log(`${pad(s.deploy)}build + deploy through ${a.deployDestination}`);
 			this.log(`${pad(s.deployTest)}same, test mode`);
 		}
-		this.log(`${pad(s.proxy)}only the proxy (${s.start ? "runtime" : "deploy"} destination)`);
+		if (this.project.abap) {
+			const env = setup.profileEnv(this.project.root, this.profile).values;
+			this.log(`${pad(s.proxy)}the proxy: http://127.0.0.1:${env.BTP_PROXY_PORT}, https://127.0.0.1:${env.BTP_PROXY_TLS_PORT} for ADT`);
+			this.log("For ABAP Development Tools, create and trust the localhost certificate once:");
+			this.log("  npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup adt-cert");
+			this.log(`then add the system in ADT as https://127.0.0.1:${env.BTP_PROXY_TLS_PORT} (Eclipse: ABAP Cloud Project). An ADT MCP server can be started through scripts/btp-mcp.js.`);
+		} else {
+			this.log(`${pad(s.proxy)}only the proxy (${s.start ? "runtime" : "deploy"} destination)`);
+		}
 		this.log(`The scripts point cf at ${this.cfStatus.api} ${a.org}/${a.space} themselves (cf login in the terminal when needed).`);
 	}
 };

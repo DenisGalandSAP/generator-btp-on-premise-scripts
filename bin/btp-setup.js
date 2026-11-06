@@ -15,15 +15,23 @@ const project = require("../generators/app/lib/project");
 const cf = require("../generators/app/lib/cf");
 const regions = require("../generators/app/lib/regions");
 const setup = require("../generators/app/lib/setup");
+const adt = require("../generators/app/lib/adt");
 
 const USAGE = `btp-on-premise-setup <command> [options] - prints JSON
 
-  status                                   cf API endpoint, login state, current org / space
+  status     [--project <dir> --env <name>] [--user <email>] [--password-env <VAR>]
+                                           cf API endpoint, login state, current org / space; the user and
+                                           password variable the scripts log in with (from .env.<env>, the
+                                           options, else CF_USERNAME / CF_PASSWORD) and whether it is set
   regions                                  SAP BTP Cloud Foundry regions and API endpoints
   login-url  --api <url>                   page that shows an SSO passcode for the endpoint
   login      --api <url> --passcode <code> cf login with an SSO passcode
-  inspect    --project <dir> [--env <name>]
-                                           app kind (library: deploy only), environments set up, defaults
+  login      --api <url> [--project <dir> --env <name>] [--user <email>] [--password-env <VAR>] [--origin <idp>]
+                                           cf auth with the password from the variable VAR; defaults from the
+                                           environment's .env, then CF_USERNAME / CF_PASSWORD
+  inspect    --project <dir> [--env <name>] [--abap]
+                                           app kind (library: deploy only; abap: proxy for ABAP Development
+                                           Tools), environments set up, defaults
   orgs
   spaces     --org <org>
   apps       --org <org> --space <space>   apps bound to a destination and a connectivity instance, with SSH state
@@ -33,15 +41,36 @@ const USAGE = `btp-on-premise-setup <command> [options] - prints JSON
                                            OnPremise HTTP destinations the app can see
   apply      --project <dir> --env <name> --org <org> --space <space> --app <app> --destination <name>
              [--deploy-destination <name> --bsp <name> --package <pkg> [--transport <tr>] [--client <nnn>]
-              [--deploy-user <user>]] [--sso | --no-sso] [--dry-run]
+              [--deploy-user <user>]] [--sso | --no-sso] [--cf-user <email>] [--password-env <VAR>]
+              [--origin <idp>] [--dry-run]
                                            writes the environment; the deploy password is read from the
                                            environment variable SAP_PWD (else left for the user to fill in).
                                            A SAPUI5 library is only deployed: --deploy-destination (or
-                                           --destination) is the one destination, there is no start-btp`;
+                                           --destination) is the one destination, there is no start-btp.
+                                           --abap: a folder for ABAP development (no ui5.yaml): only the proxy,
+                                           with an https listener for ADT, and scripts/btp-mcp.js
+  adt-cert   [--renew] [--dry-run]         localhost certificate of the https listener (~/.config/btp-proxy),
+                                           trusted by the JRE of ABAP Development Tools for VS Code; prints the
+                                           keytool commands for Eclipse ADT
+  adt-mcp    --project <dir> --env <name> --vsp <path> [--name <mcp>] [--scope user|local|project]
+             [--user <abap user>] [--client <nnn>] [--read-only] [--allowed-packages <list>]
+                                           the 'claude mcp add' command for an ADT MCP server (vsp) that starts
+                                           the environment's proxy first (nothing is registered here)`;
 
 const OPTIONS = {
 	api: { type: "string" },
 	passcode: { type: "string" },
+	origin: { type: "string" },
+	user: { type: "string" },
+	"cf-user": { type: "string" },
+	"password-env": { type: "string" },
+	abap: { type: "boolean" },
+	renew: { type: "boolean" },
+	vsp: { type: "string" },
+	name: { type: "string" },
+	scope: { type: "string" },
+	"read-only": { type: "boolean" },
+	"allowed-packages": { type: "string" },
 	project: { type: "string" },
 	env: { type: "string" },
 	org: { type: "string" },
@@ -102,9 +131,80 @@ async function onPremiseDestinations(appGuid) {
 		});
 }
 
+/** User and password for cf auth: options, then the environment's .env values, then CF_USERNAME / CF_PASSWORD. */
+function credentials(opts, env = {}) {
+	const user = (opts.user || env.BTP_CF_USER || process.env.CF_USERNAME || "").trim();
+	const passwordVar = (opts["password-env"] || env.BTP_CF_PASSWORD_ENV || "CF_PASSWORD").trim();
+	const origin = (opts.origin !== undefined ? opts.origin : env.BTP_CF_ORIGIN || "").trim();
+	return { user, passwordVar, origin, password: process.env[passwordVar] || "" };
+}
+
+/** Values of the environment named by --project / --env, or {} without them. */
+const envValues = (opts) => (opts.project && opts.env ? setup.profileEnv(path.resolve(opts.project), opts.env.trim().toLowerCase()).values : {});
+
 const commands = {
-	async status() {
-		return cf.loginStatus().catch((e) => ({ loggedIn: false, error: e.message }));
+	async "adt-cert"(opts) {
+		const { cert, created } = adt.ensureCert({ renew: !!opts.renew, dryRun: !!opts["dry-run"] });
+		const vscode = adt.vscodeJres().map(({ extension, jre }) => {
+			if (!created && adt.trusted(jre, cert)) return { extension, jre, status: "already trusted" };
+			if (opts["dry-run"]) return { extension, jre, status: "would import" };
+			try {
+				adt.trust(jre, cert);
+				return { extension, jre, status: "imported - reload the VS Code window" };
+			} catch (e) {
+				return { extension, jre, status: `failed: ${(e.stderr || e.message).toString().trim().split("\n").pop()}` };
+			}
+		});
+		return {
+			cert,
+			created,
+			vscode,
+			eclipse: adt.eclipseJres().map((e) => adt.eclipseCommands(e, cert)),
+			note: "Redo after an ADT extension or Eclipse update (new JRE folder). Eclipse must be closed for its import."
+		};
+	},
+
+	async "adt-mcp"(opts) {
+		need(opts, "project", "env", "vsp", "user");
+		const info = project.inspect(opts.project);
+		if (info.error) throw new Error(info.error);
+		if (!info.abap) throw new UsageError("--project: not set up for ABAP development (apply --abap first)");
+		const env = opts.env.trim().toLowerCase();
+		const values = setup.profileEnv(info.root, env).values;
+		if (!values.BTP_DESTINATION) throw new Error(`No environment '${env}' in ${info.root}`);
+		const scope = opts.scope || "local";
+		if (!["user", "local", "project"].includes(scope)) throw new UsageError("--scope: user, local or project");
+		if (opts.client && !/^\d{3}$/.test(opts.client)) throw new UsageError("--client: three digits");
+		const name = opts.name || `abap-adt-${env}`;
+		const command = adt.mcpCommand({
+			root: info.root, env, values, vsp: opts.vsp, name, scope,
+			user: opts.user.trim().toUpperCase(), client: opts.client || values.BTP_SAP_CLIENT,
+			readOnly: !!opts["read-only"], allowedPackages: opts["allowed-packages"]
+		});
+		return {
+			name,
+			command,
+			http: `http://127.0.0.1:${values.BTP_PROXY_PORT || 5050}`,
+			https: values.BTP_PROXY_TLS_PORT ? `https://127.0.0.1:${values.BTP_PROXY_TLS_PORT}` : undefined
+		};
+	},
+
+	async status(opts = {}) {
+		const status = await cf.loginStatus().catch((e) => ({ loggedIn: false, error: e.message }));
+		const env = envValues(opts);
+		const login = credentials(opts, env);
+		const sso = env.BTP_CF_SSO === "true";
+		// the user and the variable name are not secrets; only whether the password is set is printed
+		return {
+			...status,
+			...(opts.project && opts.env ? { environment: { api: env.BTP_CF_API, org: env.BTP_CF_ORG, space: env.BTP_CF_SPACE, app: env.BTP_APP, sso: env.BTP_CF_SSO === "true", origin: env.BTP_CF_ORIGIN || "" } } : {}),
+			envUser: login.user,
+			passwordEnv: login.passwordVar,
+			passwordSet: !!login.password,
+			origin: login.origin,
+			// whether the scripts can log in on their own (never for single sign-on)
+			envCredentials: !sso && !!(login.user && login.password)
+		};
 	},
 
 	async regions() {
@@ -117,14 +217,22 @@ const commands = {
 	},
 
 	async login(opts) {
-		need(opts, "api", "passcode");
-		await cf.loginWithPasscode(opts.api.trim().replace(/\/+$/, ""), opts.passcode.trim());
+		need(opts, "api");
+		const api = opts.api.trim().replace(/\/+$/, "");
+		if (opts.passcode) {
+			await cf.loginWithPasscode(api, opts.passcode.trim());
+		} else {
+			const { user, passwordVar, password, origin } = credentials(opts, envValues(opts));
+			if (!user) throw new Error("Give --passcode, or --user (or set CF_USERNAME)");
+			if (!password) throw new Error(`The variable ${passwordVar} is not set in the environment Claude / the CLI runs in`);
+			await cf.loginWithPassword(api, user, password, origin);
+		}
 		return cf.loginStatus();
 	},
 
 	async inspect(opts) {
 		need(opts, "project");
-		const info = project.inspect(opts.project);
+		const info = project.inspect(opts.project, { abap: !!opts.abap });
 		if (info.error) {
 			const candidates = project.findProjects([path.resolve(opts.project)]);
 			return { error: info.error, ...(candidates.length ? { candidates } : {}) };
@@ -136,6 +244,7 @@ const commands = {
 			id: info.id,
 			kind: info.kind,
 			library: !!info.library,
+			abap: !!info.abap,
 			hasBuildScript: info.hasBuildScript,
 			environments: project.profiles(info.root),
 			env,
@@ -185,8 +294,10 @@ const commands = {
 
 	async apply(opts) {
 		need(opts, "project", "env", "org", "space", "app");
-		const info = project.inspect(opts.project);
+		const info = project.inspect(opts.project, { abap: !!opts.abap });
 		if (info.error) throw new Error(info.error);
+		// an ABAP folder only gets the proxy: no deployment through it
+		if (info.abap && opts["deploy-destination"]) throw new UsageError("--deploy-destination: an ABAP folder has no deployment, give --destination only");
 		// a library has nothing to run - its one destination is the deploy destination
 		if (info.library) opts = { ...opts, "deploy-destination": opts["deploy-destination"] || opts.destination };
 		need(opts, info.library ? "deploy-destination" : "destination");
@@ -202,12 +313,17 @@ const commands = {
 			runtimeDestination: info.library ? opts["deploy-destination"] : opts.destination,
 			deployDestination: deploy ? opts["deploy-destination"] : undefined,
 			library: !!info.library,
+			abap: !!info.abap,
 			abapApp: upper(opts.bsp),
 			abapPackage: upper(opts.package),
 			abapTransport: upper(opts.transport),
 			abapClient: (opts.client || "").trim(),
-			sso: opts.sso ? true : opts["no-sso"] ? false : undefined
+			sso: opts.sso ? true : opts["no-sso"] ? false : undefined,
+			origin: opts.origin === undefined ? undefined : opts.origin.trim(),
+			cfUser: opts["cf-user"],
+			passwordEnv: opts["password-env"]
 		};
+		if (answers.passwordEnv && !setup.ENV_NAME.test(answers.passwordEnv.trim())) throw new UsageError("--password-env: a variable name (letters, digits, _), e.g. CF_PASSWORD");
 		if (deploy) {
 			need(opts, "bsp", "package");
 			if (!setup.BSP_NAME.test(answers.abapApp) || answers.abapApp.length > 15) throw new UsageError("--bsp: up to 15 characters, letters, digits, _ and an optional /NAMESPACE/");

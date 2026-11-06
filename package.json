@@ -1,8 +1,8 @@
 {
   "name": "@scodigis/generator-btp-on-premise-scripts",
   "displayName": "BTP On-Premise Access",
-  "version": "0.7.2",
-  "description": "Adds scripts to run and deploy a SAPUI5 / SAP Fiori elements app through an on-premise SAP BTP destination (cf ssh tunnel to the connectivity proxy).",
+  "version": "0.8.0",
+  "description": "Adds scripts to run and deploy a SAPUI5 / SAP Fiori elements app, or to reach an ABAP system with ABAP Development Tools and ADT MCP servers, through an on-premise SAP BTP destination (cf ssh tunnel to the connectivity proxy).",
   "main": "generators/app/index.js",
   "bin": {
     "btp-on-premise-setup": "bin/btp-setup.js"
@@ -21,7 +21,9 @@
     "sapbtp",
     "destination",
     "cloud-foundry",
-    "claude-code"
+    "claude-code",
+    "abap",
+    "adt"
   ],
   "author": "Scodigis",
   "repository": {
@@ -41,7 +43,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "test": "node test/run.js",
+    "test": "node test/run.js && node test/scenarios.js",
     "pack:check": "npm pack --dry-run",
     "prepublishOnly": "npm test"
   },

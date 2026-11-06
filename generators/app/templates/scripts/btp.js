@@ -79,13 +79,21 @@ function listeners(port) {
 			return execFileSync("powershell", ["-NoProfile", "-Command", ps], { encoding: "utf8" })
 				.split(/\r?\n/).filter(Boolean).map((l) => ({ pid: Number(l.split("|")[0]), command: l.slice(l.indexOf("|") + 1) }));
 		}
-		return execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" })
-			.split(/\s+/).filter(Boolean).map((pid) => ({
-				pid: Number(pid),
-				command: execFileSync("ps", ["-o", "command=", "-p", pid], { encoding: "utf8" }).trim()
-			}));
+		let pids;
+		try {
+			pids = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split(/\s+/);
+		} catch (e) {
+			if (e.code !== "ENOENT") return []; // lsof exits 1 when nothing listens
+			// Linux without lsof (minimal distributions, some containers): ss from iproute2
+			const out = execFileSync("ss", ["-Hltnp", `sport = :${port}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+			pids = [...out.matchAll(/pid=(\d+)/g)].map((m) => m[1]);
+		}
+		return [...new Set(pids.filter(Boolean))].map((pid) => ({
+			pid: Number(pid),
+			command: execFileSync("ps", ["-o", "command=", "-p", pid], { encoding: "utf8" }).trim()
+		}));
 	} catch (e) {
-		return []; // lsof exits 1 when nothing listens
+		return [];
 	}
 }
 
