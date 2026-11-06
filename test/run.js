@@ -33,8 +33,8 @@ const DESTINATIONS = [
 /** @type {{ loggedOut: boolean, logins: any[][], api: string | undefined }} */
 const session = { loggedOut: false, logins: [], api: undefined };
 // apps bound in the space; createTunnelApp records its arguments and "creates" btp-tunnel
-/** @type {{ apps: { name: string, guid: string }[], created: any[][] }} */
-const space = { apps: [{ name: "my-srv", guid: "a1" }], created: [] };
+/** @type {{ apps: { name: string, guid: string, tunnel?: boolean }[], created: any[][] }} */
+const space = { apps: [{ name: "my-srv", guid: "a1", tunnel: true }], created: [] };
 Object.assign(cf, {
 	loginStatus: async () =>
 		session.loggedOut
@@ -56,7 +56,7 @@ Object.assign(cf, {
 	boundApps: async () => space.apps,
 	createTunnelApp: async (org, spaceName, spaceGuid) => {
 		space.created.push([org, spaceName, spaceGuid]);
-		space.apps = [{ name: cf.TUNNEL.app, guid: "t1" }];
+		space.apps = [...space.apps, { name: cf.TUNNEL.app, guid: "t1", tunnel: true }];
 		return cf.TUNNEL.app;
 	},
 	sshEnabled: async () => ({ enabled: true }),
@@ -459,7 +459,35 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.strictEqual(env.BTP_APP, "btp-tunnel");
 		}
 	);
-	space.apps = [{ name: "my-srv", guid: "a1" }];
+	// a single real application (routes or other services) is not picked silently: the list also offers a new tunnel app
+	space.apps = [{ name: "my-srv", guid: "a1", tunnel: false }];
+	space.created = [];
+	await scenario(
+		"one real application bound, a dedicated tunnel app created instead",
+		{ app: "*create-tunnel*", runtimeDestination: "SYS_RUNTIME", setupDeploy: false },
+		(read, env) => {
+			assert.deepStrictEqual(space.created, [["my-org", "dev", "s1"]]);
+			assert.strictEqual(env.BTP_APP, "btp-tunnel");
+		}
+	);
+	space.apps = [{ name: "my-srv", guid: "a1", tunnel: false }];
+	await scenario(
+		"one real application bound, chosen on purpose",
+		{ app: "my-srv", runtimeDestination: "SYS_RUNTIME", setupDeploy: false },
+		(read, env) => assert.strictEqual(env.BTP_APP, "my-srv")
+	);
+	// a single tunnel app is still picked without asking (the answer to create one is never read)
+	space.apps = [{ name: "dev-tunnel", guid: "a2", tunnel: true }];
+	space.created = [];
+	await scenario(
+		"one tunnel app bound, picked automatically",
+		{ app: "*create-tunnel*", runtimeDestination: "SYS_RUNTIME", setupDeploy: false },
+		(read, env) => {
+			assert.deepStrictEqual(space.created, []);
+			assert.strictEqual(env.BTP_APP, "dev-tunnel");
+		}
+	);
+	space.apps = [{ name: "my-srv", guid: "a1", tunnel: true }];
 	await scenario(
 		"SAPUI5 library, deployment only",
 		{ deployDestination: "SYS_DEPLOY", abapApp: "zfixturelib", abapPackage: "zfixture", abapTransport: "SYSK900001", abapClient: "100", deployUser: "DEPLOYER", deployPassword: "p" },

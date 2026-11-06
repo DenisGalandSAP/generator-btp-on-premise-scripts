@@ -60,8 +60,11 @@ ones. If `cf enable-ssh` fails, SSH is disabled for the space, and a Space Manag
    links to the passcode page), or with a password typed for this one login. Add an identity provider origin if
    you use a custom one; it is kept as `BTP_CF_ORIGIN`.
 3. Cloud Foundry Target: org, space, and an app bound to both a destination and a connectivity service
-   instance, with SSH enabled. If the space has exactly one such app, the wizard picks it. If it has none,
-   the wizard offers to create `btp-tunnel` (see [First-time setup](#first-time-setup)).
+   instance, with SSH enabled. If the space has exactly one such app and it is a tunnel app (no route, no other
+   service bound), the wizard picks it. A real application, such as a CAP service that happens to have both
+   bindings, is never picked without asking: the list marks it and also offers to create a dedicated
+   `btp-tunnel` app, so restarting or redeploying the application doesn't cut the tunnel. If the space has no
+   such app, the wizard offers to create `btp-tunnel` (see [First-time setup](#first-time-setup)).
 4. Destinations: the runtime destination for `npm run start-btp:<env>` and, if you want one, the deploy
    destination for `npm run deploy-btp:<env>`. Leave *Also deploy through a BTP destination* unchecked to
    skip the Deployment step; the environment then gets no `ui5-deploy-btp-<env>.yaml`, no `deploy-btp:<env>`
@@ -205,15 +208,24 @@ node test/run.js <app> --verbose  # same on a copy of another app, printing the 
 
 ## Release (npmjs.com)
 
-Publishing needs the `scodigis` organization on npmjs.com (free for public packages) and your npm user as a
-member with publish rights. Two-factor authentication is recommended.
+A pushed version tag publishes the package: the workflow `.github/workflows/publish.yml` checks that the tag
+matches `package.json`, runs the tests and publishes with npm trusted publishing (no npm token in GitHub, and a
+provenance statement on npmjs.com).
 
 ```sh
-npm login                         # once per machine
-npm version patch                 # or minor / major - bumps package.json (and tags, in a git repo)
+npm version patch                 # or minor / major - bumps package.json and creates the tag v<version>
 npm run pack:check                # check the file list that will be published
-npm publish                       # runs npm test first (prepublishOnly); publishConfig makes it public
+git push --follow-tags            # the tag starts the publish workflow
 ```
+
+Once per package, an owner of the `scodigis` organization on npmjs.com registers the workflow as trusted
+publisher (`npm trust` needs npm 11.10 or later; it asks for the two-factor code):
+
+```sh
+npm trust github @scodigis/generator-btp-on-premise-scripts --file publish.yml --repo DenisGalandSAP/generator-btp-on-premise-scripts --allow-publish
+```
+
+To publish by hand instead: `npm login`, then `npm publish` (runs `npm test` first through `prepublishOnly`).
 
 ## Release order
 

@@ -155,7 +155,12 @@ async function serviceInstances(spaceGuid) {
 	return new Map(instances.map((i) => [i.guid, { name: i.name, offering: planOffering.get(i.relationships.service_plan.data.guid) }]));
 }
 
-/** Apps of a space bound to both a destination and a connectivity service instance. */
+/**
+ * Apps of a space bound to both a destination and a connectivity service instance. `tunnel` is true for an app
+ * that looks like it only serves as a tunnel: no route, and no service bound besides destination and connectivity.
+ * Anything else (an approuter, a CAP service...) is a real app that the user may not want to tunnel through.
+ * @returns {Promise<{ guid: string, name: string, tunnel: boolean }[]>}
+ */
 async function boundApps(spaceGuid) {
 	const instances = await serviceInstances(spaceGuid);
 	const instanceOffering = new Map([...instances].map(([guid, i]) => [guid, i.offering]));
@@ -171,9 +176,23 @@ async function boundApps(spaceGuid) {
 		if (!servicesByApp.has(appGuid)) servicesByApp.set(appGuid, new Set());
 		servicesByApp.get(appGuid).add(instanceOffering.get(b.relationships.service_instance.data.guid));
 	}
-	return [...servicesByApp]
+	const candidates = [...servicesByApp]
 		.filter(([, services]) => services.has("destination") && services.has("connectivity"))
-		.map(([guid]) => ({ guid, name: appNames.get(guid) || guid }))
+		.map(([guid]) => guid);
+	if (!candidates.length) return [];
+
+	// routes and the other services bound to the candidates tell a tunnel app from a real one
+	const guids = candidates.join(",");
+	const [{ resources: routes }, { resources: allBindings }] = await Promise.all([
+		curlAll(`/v3/routes?app_guids=${guids}&per_page=200`),
+		curlAll(`/v3/service_credential_bindings?type=app&app_guids=${guids}&per_page=200`)
+	]);
+	const routed = new Set(routes.flatMap((r) => (r.destinations || []).map((d) => d.app && d.app.guid)));
+	const otherServices = new Set(
+		allBindings.filter((b) => !instanceOffering.has(b.relationships.service_instance.data.guid)).map((b) => b.relationships.app.data.guid)
+	);
+	return candidates
+		.map((guid) => ({ guid, name: appNames.get(guid) || guid, tunnel: !routed.has(guid) && !otherServices.has(guid) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 

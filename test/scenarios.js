@@ -9,8 +9,9 @@
  *           tunnel dropped and reopened with a new login
  *   mcp     btp-mcp.js reuses a running proxy, or starts one in the background, then runs the tool
  *   adt     adt-cert: localhost certificate, VS Code ADT JREs (Linux and macOS layouts), Eclipse, WSL paths
+ *   apps    which apps of a space can carry the tunnel, and which of them are real applications
  *
- *   node test/scenarios.js [login|proxy|mcp|adt ...]
+ *   node test/scenarios.js [login|proxy|mcp|adt|apps ...]
  */
 const assert = require("assert");
 const crypto = require("crypto");
@@ -480,10 +481,44 @@ function adt() {
 	console.log("OK adt-cert scenarios (certificate, VS Code ADT JREs Linux + macOS layouts, renew, Eclipse, WSL paths)");
 }
 
+/* ------------------------------------------------------------------ apps */
+
+async function apps() {
+	const w = world();
+	w.state({ authed: true });
+	const rel = (kind, guid) => ({ [kind]: { data: { guid } } });
+	const binding = (app, instance) => ({ relationships: { ...rel("app", app), ...rel("service_instance", instance) } });
+	fs.writeFileSync(path.join(w.cfDir, "v3.json"), JSON.stringify({
+		"/v3/service_offerings": { resources: [{ guid: "of-d", name: "destination" }, { guid: "of-c", name: "connectivity" }] },
+		"/v3/service_plans": { resources: [{ guid: "p-d", relationships: rel("service_offering", "of-d") }, { guid: "p-c", relationships: rel("service_offering", "of-c") }] },
+		"/v3/service_instances": { resources: [{ guid: "i-d", name: "dest", relationships: rel("service_plan", "p-d") }, { guid: "i-c", name: "conn", relationships: rel("service_plan", "p-c") }] },
+		// bindings to the destination / connectivity instances: the approuter has no connectivity
+		"/v3/service_credential_bindings?type=app&service_instance_guids": {
+			resources: [binding("a-srv", "i-d"), binding("a-srv", "i-c"), binding("a-cap", "i-d"), binding("a-cap", "i-c"), binding("a-tun", "i-d"), binding("a-tun", "i-c"), binding("a-ar", "i-d")],
+			included: { apps: [{ guid: "a-srv", name: "web-srv" }, { guid: "a-cap", name: "cap-srv" }, { guid: "a-tun", name: "dev-tunnel" }, { guid: "a-ar", name: "approuter" }] }
+		},
+		// every binding of the candidates: cap-srv also has an xsuaa instance
+		"/v3/service_credential_bindings?type=app&app_guids": {
+			resources: [binding("a-srv", "i-d"), binding("a-srv", "i-c"), binding("a-cap", "i-d"), binding("a-cap", "i-c"), binding("a-cap", "i-xsuaa"), binding("a-tun", "i-d"), binding("a-tun", "i-c")]
+		},
+		// web-srv has a route
+		"/v3/routes": { resources: [{ destinations: [{ app: { guid: "a-srv" } }] }] }
+	}));
+	const code = `require(${JSON.stringify(path.join(__dirname, "..", "generators", "app", "lib", "cf.js"))}).boundApps("s1").then((r) => console.log(JSON.stringify(r)))`;
+	const r = spawnSync(process.execPath, ["-e", code], { env: w.env, encoding: "utf8" });
+	assert.strictEqual(r.status, 0, r.stderr);
+	assert.deepStrictEqual(JSON.parse(r.stdout), [
+		{ guid: "a-cap", name: "cap-srv", tunnel: false },
+		{ guid: "a-tun", name: "dev-tunnel", tunnel: true },
+		{ guid: "a-srv", name: "web-srv", tunnel: false }
+	]);
+	console.log("OK apps scenario (approuter left out, routes or other services make a real application)");
+}
+
 /* ------------------------------------------------------------------ */
 
 (async () => {
-	const all = { login, proxy, mcp, adt };
+	const all = { login, proxy, mcp, adt, apps };
 	for (const [name, run] of Object.entries(all)) {
 		if (only.length && !only.includes(name)) continue;
 		await run();
