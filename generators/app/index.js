@@ -37,6 +37,11 @@ const DIRECT_ACCESS_NOTE =
 const OTHER_ENDPOINT = "other";
 const CURRENT_SESSION = "current";
 const OTHER_SESSION = "login";
+// the steps shown by the Template Wizard. Prompts keeps them in `items`, which its typings declare private: read
+// them here only, so a change in @sap-devx/yeoman-ui-types shows up in one place
+/** @returns {import("@sap-devx/yeoman-ui-types").IPrompt[]} */
+const promptItems = (prompts) => /** @type {any} */ (prompts).items;
+
 const required = (label) => (value) => (value && String(value).trim() ? true : `${label} is required`);
 
 module.exports = class extends Generator {
@@ -50,12 +55,32 @@ module.exports = class extends Generator {
 		};
 		// package.json only gets scripts - no need for the automatic npm install
 		if (this.env && this.env.options) this.env.options.skipInstall = true;
+		/** @type {{ orgs: { name: string, guid: string }[] | undefined, spaces: Map<string, any>, apps: Map<string, any>, destinations: Map<string, any> }} */
 		this.cache = { orgs: undefined, spaces: new Map(), apps: new Map(), destinations: new Map() };
+		/** @type {{ proxy: string, start?: string, deploy?: string, deployTest?: string }} npm scripts written */
+		this.scripts = { proxy: "" };
+		/** @type {Record<string, any>} answers of every step, for the writing step */
 		this.answers = {};
+		/** @type {import("./lib/cf").CfStatus} */
+		this.cfStatus = { loggedIn: false };
+		/** @type {import("./lib/project").ProjectInfo} set by the project step, which only accepts a valid folder */
+		this.project = /** @type {any} */ (undefined);
+		/** @type {string} */
+		this.profile = "dev";
+		/** @type {Record<string, string>} values of .env.<profile> */
+		this.existingEnv = {};
+		/** @type {boolean | undefined} */
+		this.loginSso = undefined;
+		/** @type {string | undefined} */
+		this.loginOrigin = undefined;
+		/** @type {string | undefined} */
+		this.loginUser = undefined;
+		/** @type {string | undefined} */
+		this.loginPasswordEnv = undefined;
 	}
 
 	async initializing() {
-		this.cfStatus = await cf.loginStatus().catch((e) => ({ loggedIn: false, error: e.message }));
+		this.cfStatus = await cf.loginStatus().catch((e) => /** @type {import("./lib/cf").CfStatus} */ ({ loggedIn: false, error: e.message }));
 		if (!this.cfStatus.loggedIn) this.prompts.splice(1, 0, [STEPS.endpoint, STEPS.login]);
 	}
 
@@ -101,7 +126,7 @@ module.exports = class extends Generator {
 			},
 			this._label("projectInfo", (a) => {
 				const info = project.inspect(a.projectPath, { abap: a.purpose === "abap" });
-				if (info.error) return "";
+				if (project.failed(info)) return "";
 				const notes = [info.abap ? `${info.kind} in '${info.id}' (proxy with https for ADT)` : info.library ? `${info.kind} '${info.id}' (deployment only)` : `${info.kind} app '${info.id}'`];
 				if (!info.hasBuildScript && !info.abap) notes.push("WARNING: package.json has no 'build' script, deploy-btp needs one");
 				const existing = project.profiles(info.root);
@@ -138,7 +163,8 @@ module.exports = class extends Generator {
 				guiOptions: { hint: "Orgs of every subaccount in the same region are reachable with the current session; another region needs a login" }
 			}
 		]);
-		this.project = project.inspect(answers.projectPath, { abap: answers.purpose === "abap" });
+		// the folder prompt only accepts a folder inspect() can set up
+		this.project = /** @type {import("./lib/project").ProjectInfo} */ (project.inspect(answers.projectPath, { abap: answers.purpose === "abap" }));
 		this.profile = (answers.profile || "dev").trim().toLowerCase();
 		const prev = this._profileEnv(this.project.root, this.profile);
 		this.existingEnv = prev.values;
@@ -507,8 +533,8 @@ module.exports = class extends Generator {
 		this.runtimeDest = await this._destination(answers.runtimeDestination);
 		this.deployDest = this.setupDeploy ? await this._destination(answers.deployDestination) : undefined;
 		// no deployment - drop the Deployment step from the wizard
-		const deployStep = this.prompts.items.indexOf(STEPS.deploy);
-		if (!this.setupDeploy && deployStep >= 0) this.prompts.splice(deployStep, 1);
+		const deployStep = promptItems(this.prompts).indexOf(STEPS.deploy);
+		if (!this.setupDeploy && deployStep >= 0) this.prompts.splice(deployStep, 1, []);
 	}
 
 	/* ---------- 5. deploy ---------- */
@@ -582,8 +608,8 @@ module.exports = class extends Generator {
 
 	async prompting() {
 		await this._promptProject();
-		if (this.cfSession === OTHER_SESSION && !this.prompts.items.includes(STEPS.login)) {
-			this.prompts.splice(this.prompts.items.indexOf(STEPS.project) + 1, 0, [STEPS.endpoint, STEPS.login]);
+		if (this.cfSession === OTHER_SESSION && !promptItems(this.prompts).includes(STEPS.login)) {
+			this.prompts.splice(promptItems(this.prompts).indexOf(STEPS.project) + 1, 0, [STEPS.endpoint, STEPS.login]);
 		}
 		if (!this.cfStatus.loggedIn || this.cfSession === OTHER_SESSION) await this._promptLogin();
 		await this._promptTarget();
@@ -616,7 +642,8 @@ module.exports = class extends Generator {
 			}
 			// files we own are written without an overwrite prompt
 			this.fs.write(target, contents);
-			this.fs.store.get(target).conflicter = "force";
+			// mem-fs-editor internals: mark the file so the conflicter does not ask
+			/** @type {any} */ (this.fs).store.get(target).conflicter = "force";
 		}
 		for (const warning of result.warnings) this.log(warning);
 		this.scripts = result.scripts;
@@ -631,7 +658,7 @@ module.exports = class extends Generator {
 		} catch (e) {
 			this.log(`Could not run 'cf target -o "${a.org}" -s "${a.space}"': ${e.message}`);
 		}
-		const pad = (name) => `  npm run ${name}`.padEnd(36);
+		const pad = (/** @type {string | undefined} */ name) => `  npm run ${name}`.padEnd(36);
 		this.log("");
 		this.log(`BTP destination scripts for environment '${this.profile}' added to ${this.project.root}`);
 		if (s.start) this.log(`${pad(s.start)}run the app through ${a.runtimeDestination}`);

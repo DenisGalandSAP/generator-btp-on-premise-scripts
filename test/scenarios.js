@@ -44,6 +44,7 @@ function world(envFile = {}) {
 	const values = { BTP_CF_API: "https://api.cf.eu10.hana.ondemand.com", BTP_CF_ORG: "my-org", BTP_CF_SPACE: "dev", BTP_APP: "my-srv", BTP_DESTINATION: "SYS", ...envFile };
 	fs.writeFileSync(path.join(project, ".env.dev"), Object.entries(values).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
 	const bin = fakeBin("cf", path.join(__dirname, "fakes", "cf.js"));
+	/** @type {NodeJS.ProcessEnv} */
 	const env = {
 		...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CF_|BTP_|FAKE_|EP_)/.test(k))),
 		PATH: `${bin}${path.delimiter}${process.env.PATH}`,
@@ -160,7 +161,7 @@ function login() {
 
 const freePort = () => new Promise((resolve) => {
 	const s = net.createServer().listen(0, "127.0.0.1", () => {
-		const { port } = s.address();
+		const { port } = /** @type {import("net").AddressInfo} */ (s.address());
 		s.close(() => resolve(port));
 	});
 });
@@ -249,7 +250,7 @@ async function proxy() {
 	const tls = hasOpenssl();
 	const w = await btpWorld();
 	if (tls) {
-		const dir = w.env.BTP_PROXY_TLS_DIR;
+		const dir = /** @type {string} */ (w.env.BTP_PROXY_TLS_DIR);
 		fs.mkdirSync(dir, { recursive: true });
 		execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=localhost", "-keyout", path.join(dir, "localhost.key"), "-out", path.join(dir, "localhost.crt")], { stdio: "ignore", shell: isWin });
 	}
@@ -352,7 +353,7 @@ async function mcp() {
 		started = undefined;
 		await waitFor("the port to be free", async () => !(await request(`http://127.0.0.1:${w.ports.proxy}/`).catch(() => false)));
 		const other = http.createServer((req, res) => res.end("not a proxy"));
-		await new Promise((resolve) => other.listen(w.ports.proxy, "127.0.0.1", resolve));
+		await new Promise((resolve) => other.listen(w.ports.proxy, "127.0.0.1", () => resolve(undefined)));
 		r = await runMcp(w, tool);
 		assert.match(r.stderr, /taken by something else/);
 		other.close();

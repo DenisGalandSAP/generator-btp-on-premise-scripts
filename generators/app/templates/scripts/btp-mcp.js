@@ -97,5 +97,5 @@ ensureProxy().then(() => {
 		say(`${command[0]}: ${e.message}`);
 		process.exit(1);
 	});
-	for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => child.kill(sig));
+	for (const sig of /** @type {NodeJS.Signals[]} */ (["SIGINT", "SIGTERM"])) process.on(sig, () => child.kill(sig));
 });

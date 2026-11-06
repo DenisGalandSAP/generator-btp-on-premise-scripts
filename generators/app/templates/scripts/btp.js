@@ -163,7 +163,8 @@ function startProxy({ destination, port, tunnelPort }) {
 		const args = [path.join(__dirname, "btp-proxy.js"), ...(profile ? ["--profile", profile] : []), "--destination", destination, "--port", String(port), "--tunnel-port", String(tunnelPort)];
 		const proxy = run(process.execPath, args, { shell: false, stdio: ["ignore", "pipe", "inherit"] });
 		let ready = false;
-		proxy.stdout.on("data", (chunk) => {
+		// stdio "pipe": stdout is always there
+		/** @type {import("stream").Readable} */ (proxy.stdout).on("data", (chunk) => {
 			process.stdout.write(chunk);
 			if (!ready && /\[btp-proxy\] listening on/.test(chunk.toString())) {
 				ready = true;

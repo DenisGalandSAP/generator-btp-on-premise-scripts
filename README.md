@@ -197,7 +197,9 @@ never printed, and `SAP_PWD` is shown as `***`. The deploy password is taken fro
 ```sh
 npm install
 npm link                          # use the working copy as the globally installed generator
-npm test                          # runs the generator on a copy of test/fixture/app, with cf stubbed
+npm test                          # type check, then the generator on a copy of test/fixture/app (cf stubbed)
+                                  # and the scenarios of test/scenarios.js (fake cf, fake BTP services)
+npm run typecheck                 # only the type check: tsc on the JavaScript with JSDoc types (no build)
 node test/run.js <app> --verbose  # same on a copy of another app, printing the generated files
 ```
 

@@ -12,7 +12,7 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 
-const dir = process.env.FAKE_CF_DIR;
+const dir = /** @type {string} */ (process.env.FAKE_CF_DIR);
 const stateFile = path.join(dir, "state.json");
 const state = fs.existsSync(stateFile)
 	? JSON.parse(fs.readFileSync(stateFile, "utf8"))

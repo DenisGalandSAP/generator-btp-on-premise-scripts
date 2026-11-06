@@ -65,7 +65,13 @@ const cfWithEnv = (extraEnv, ...args) =>
 		? execSync(["cf", ...args].map(quote).join(" "), { ...cfOptions(extraEnv), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 		: execFileSync("cf", args, { ...cfOptions(extraEnv), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })).trim();
 const cf = (...args) => cfWithEnv({}, ...args);
-/** spawn / spawnSync arguments for a cf command: spawn(...cfCommand(["ssh", app], { stdio: "inherit" })) */
+/**
+ * spawn / spawnSync arguments for a cf command: spawn(...cfCommand(["ssh", app], { stdio: "inherit" })). On Windows
+ * the arguments are already in the command line, and the second element is the options.
+ * @param {string[]} args
+ * @param {import("child_process").SpawnOptions} [options]
+ * @returns {[string, any, any?]}
+ */
 const cfCommand = (args, options = {}) =>
 	isWin
 		? [["cf", ...args].map(quote).join(" "), { ...cfOptions(), ...options, shell: true }]
@@ -124,20 +130,15 @@ function loginFromEnv({ user, password }, endpoint, org, space) {
 	} catch (e) {
 		// cf prints "Credentials were rejected" without echoing the password
 		const reason = lastLine((e.stderr || e.stdout || e.message).toString());
-		const err = new Error(`cf auth as ${user} failed: ${reason}`);
 		// only a refused logon counts against the account; a network error may be retried
-		err.rejected = /credentials|password|rejected|unauthorized|locked/i.test(reason);
-		err.reason = reason;
-		throw err;
+		throw Object.assign(new Error(`cf auth as ${user} failed: ${reason}`), { rejected: /credentials|password|rejected|unauthorized|locked/i.test(reason), reason });
 	}
 	forgetRejected(user);
 	try {
 		cf("target", "-o", org, "-s", space);
 	} catch (e) {
 		// logged in fine: another cf login would not help, the org / space or the user's role is wrong
-		const err = new Error(`logged in as ${user}, but cf target -o "${org}" -s "${space}" failed: ${(e.stderr || e.stdout || e.message).toString().trim()}`);
-		err.loggedIn = true;
-		throw err;
+		throw Object.assign(new Error(`logged in as ${user}, but cf target -o "${org}" -s "${space}" failed: ${(e.stderr || e.stdout || e.message).toString().trim()}`), { loggedIn: true });
 	}
 }
 

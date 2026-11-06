@@ -15,7 +15,7 @@ const opt = (name) => args[args.indexOf(name) + 1];
 const imported = path.join(jre, "imported.sha256");
 const sha = (file) => {
 	const pem = fs.readFileSync(file, "utf8").replace(/-----[^-]+-----|\s/g, "");
-	return crypto.createHash("sha256").update(Buffer.from(pem, "base64")).digest("hex").toUpperCase().match(/../g).join(":");
+	return crypto.createHash("sha256").update(Buffer.from(pem, "base64")).digest("hex").toUpperCase().replace(/(..)(?!$)/g, "$1:");
 };
 
 if (!fs.existsSync(path.join(jre, "lib", "security", "cacerts"))) {
