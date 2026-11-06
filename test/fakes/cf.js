@@ -68,10 +68,15 @@ switch (args[0]) {
 		if (!state.authed) fail("The token expired");
 		console.log("guid-1");
 		break;
-	case "curl":
+	case "curl": {
 		if (!state.authed) fail("The token expired");
-		process.stdout.write(fs.readFileSync(path.join(dir, "app-env.json"), "utf8"));
+		// v3.json (optional): { "<path prefix>": <answer> } - the longest matching prefix answers, else app-env.json
+		const v3File = path.join(dir, "v3.json");
+		const routes = fs.existsSync(v3File) ? JSON.parse(fs.readFileSync(v3File, "utf8")) : {};
+		const key = Object.keys(routes).filter((k) => args[1].startsWith(k)).sort((a, b) => b.length - a.length)[0];
+		process.stdout.write(key ? JSON.stringify(routes[key]) : fs.readFileSync(path.join(dir, "app-env.json"), "utf8"));
 		break;
+	}
 	case "ssh": {
 		// -L [bind:]localport:host:port - forward like the real tunnel, until killed
 		const spec = opt("-L").split(":");

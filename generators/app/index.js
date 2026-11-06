@@ -21,6 +21,30 @@ const cf = require("./lib/cf");
 const regions = require("./lib/regions");
 const setup = require("./lib/setup");
 
+// value of the "create a new tunnel app" choice in the app list
+const CREATE_TUNNEL = "*create-tunnel*";
+
+/** @typedef {{ guid: string, name: string, tunnel?: boolean }} BoundApp */
+
+/** Ask for the app unless there is exactly one and it is a tunnel app (none: the createTunnel question). */
+const askApp = (/** @type {BoundApp[]} */ apps) => apps.length > 1 || (apps.length === 1 && !apps[0].tunnel);
+
+/** The bound apps, real ones marked, plus a choice to create a dedicated tunnel app if there is none of that name. */
+function appChoices(/** @type {BoundApp[]} */ apps) {
+	const choices = apps.map((x) => ({ name: x.tunnel ? x.name : `${x.name} (an application with routes or other services)`, value: x.name }));
+	if (!apps.some((x) => x.name === cf.TUNNEL.app)) {
+		choices.push({ name: `Create a new tunnel app '${cf.TUNNEL.app}' (64 MB, only used for the tunnel)`, value: CREATE_TUNNEL });
+	}
+	return choices;
+}
+
+/** The environment's app if still bound, else the first tunnel app, else a new one. */
+function defaultApp(/** @type {BoundApp[]} */ apps, /** @type {string | undefined} */ previous) {
+	if (previous && apps.some((x) => x.name === previous)) return previous;
+	const tunnel = apps.find((x) => x.tunnel);
+	return tunnel ? tunnel.name : CREATE_TUNNEL;
+}
+
 const STEPS = {
 	project: { name: "Project", description: "SAPUI5 / SAP Fiori elements app or SAPUI5 library, or a folder for ABAP development, to add the BTP destination scripts to" },
 	endpoint: { name: "Cloud Foundry Endpoint", description: "Region of the subaccount the environment lives in (asked when not logged in, the session expired or another region was chosen)" },
@@ -370,6 +394,7 @@ module.exports = class extends Generator {
 	}
 
 	async _validateApp(name, a) {
+		if (name === CREATE_TUNNEL) return true;
 		const apps = await this._apps(a.org, a.space);
 		if (!apps.length) return `No app in ${a.org}/${a.space} is bound to both a destination and a connectivity service instance - let the generator create one, or see 'First-time setup' in the README`;
 		const app = apps.find((x) => x.name === name);
@@ -408,10 +433,11 @@ module.exports = class extends Generator {
 				type: "list",
 				name: "app",
 				message: "App bound to the destination and connectivity services",
-				choices: async (a) => (a.org && a.space ? (await this._apps(a.org, a.space)).map((x) => x.name) : []),
-				default: prev.BTP_APP,
-				// only ask when there is a choice - a single bound app is picked automatically, none is created (below)
-				when: async (a) => !!a.org && !!a.space && (await this._apps(a.org, a.space)).length > 1,
+				choices: async (a) => (a.org && a.space ? appChoices(await this._apps(a.org, a.space)) : []),
+				default: async (a) => defaultApp(await this._apps(a.org, a.space), prev.BTP_APP),
+				// a single tunnel-like app is picked automatically, none is created (below); a real app (routes, other
+				// services) is never picked silently: the list also offers a dedicated tunnel app
+				when: async (a) => !!a.org && !!a.space && askApp(await this._apps(a.org, a.space)),
 				guiOptions: {
 					mandatory: true,
 					hint: "The local proxy reads the service keys from this app's environment and opens 'cf ssh' through it to the connectivity proxy"
@@ -433,7 +459,7 @@ module.exports = class extends Generator {
 			}
 		]);
 		const apps = await this._apps(answers.org, answers.space);
-		if (!apps.length && answers.createTunnel) {
+		if ((!apps.length && answers.createTunnel) || answers.app === CREATE_TUNNEL) {
 			const space = (await this._spaces(answers.org)).find((s) => s.name === answers.space);
 			this.log(`Creating the tunnel app in ${answers.org}/${answers.space} - this takes a minute or two`);
 			answers.app = await cf.createTunnelApp(answers.org, answers.space, space.guid, (msg) => this.log(msg));

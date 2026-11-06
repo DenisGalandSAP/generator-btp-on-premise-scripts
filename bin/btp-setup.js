@@ -34,7 +34,9 @@ const USAGE = `btp-on-premise-setup <command> [options] - prints JSON
                                            Tools), environments set up, defaults
   orgs
   spaces     --org <org>
-  apps       --org <org> --space <space>   apps bound to a destination and a connectivity instance, with SSH state
+  apps       --org <org> --space <space>   apps bound to a destination and a connectivity instance, with SSH state;
+                                           tunnel: false for a real application (routes or other services), which
+                                           is never picked without asking
   create-tunnel --org <org> --space <space>
                                            creates the 'btp-tunnel' app (and service instances when missing)
   destinations --org <org> --space <space> --app <app>
@@ -280,7 +282,7 @@ const commands = {
 		const apps = await cf.boundApps(s.guid);
 		return Promise.all(apps.map(async (a) => {
 			const ssh = await cf.sshEnabled(a.guid).catch((e) => ({ enabled: false, reason: e.message }));
-			return { name: a.name, sshEnabled: !!ssh.enabled, ...(ssh.enabled ? {} : { sshReason: ssh.reason || "disabled" }) };
+			return { name: a.name, tunnel: a.tunnel, sshEnabled: !!ssh.enabled, ...(ssh.enabled ? {} : { sshReason: ssh.reason || "disabled" }) };
 		}));
 	},
 
