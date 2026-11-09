@@ -284,6 +284,15 @@ async function proxy() {
 		assert.match(seen.headers.cookie, /sap-ssolist=SSO1/);
 		assert.doesNotMatch(seen.headers.cookie, /other=x/);
 
+		// a browser sends the cookies of a proxy for another client (same host, other port):
+		// sap-ssolist / sap-usercontext are replaced by this proxy's own, the rest is kept
+		r = await request(`${base}/sap/bc/ui2/flp`, { headers: { cookie: "sap-ssolist=OTHERCLIENT; MYSAPSSO2=OTHERTICKET; sap-usercontext=sap-client=300; keep=1" } });
+		const crossed = JSON.parse(r.body).headers.cookie;
+		assert.match(crossed, /sap-ssolist=SSO1/);
+		assert.match(crossed, /sap-usercontext=sap-client=100/);
+		assert.match(crossed, /keep=1/);
+		assert.doesNotMatch(crossed, /OTHERCLIENT|OTHERTICKET|MYSAPSSO2|sap-client=300/);
+
 		// a browser on the backend's own pages: cookies become localhost cookies it keeps
 		r = await request(`${base}/sap/bc/ui2/flp`);
 		assert.deepStrictEqual(r.headers["set-cookie"], [

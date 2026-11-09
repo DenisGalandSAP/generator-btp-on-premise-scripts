@@ -109,7 +109,7 @@ The proxy can also serve pages the backend renders itself, such as the on-premis
 `http://localhost:<port>/sap/bc/ui2/flp?sap-client=<client>`. The proxy logs on with the destination's
 credentials, so everyone using that port works as the destination's user. It rewrites the backend's cookies into
 localhost cookies (no `domain=`, and `SameSite=None` becomes `Lax` on http, or gets `Secure` on https), so the
-browser keeps the XSRF cookie and POST requests are not refused with "CSRF token is invalid". When the Cloud
+browser keeps the XSRF cookie and POST requests are not refused with "CSRF token is invalid". A browser shares cookies between localhost ports, so the proxy always sends its own `sap-ssolist` and `sap-usercontext` and drops the browser's `MYSAPSSO2` ticket: two proxies for two clients of the same system can be open side by side. When the Cloud
 Connector blocks `/sap/public`, a custom theme can't load: add `&sap-theme=sap_horizon` to use the standard
 theme, which loads from the UI5 libraries.
 
