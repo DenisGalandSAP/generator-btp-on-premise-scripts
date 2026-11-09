@@ -195,6 +195,27 @@ async function main() {
 	// Browsers get them from the challenge round trip; tools sending credentials up front
 	// (fiori deploy) do not. So fetch them once per client, unauthenticated, and add them.
 	const PRIME_COOKIES = ["sap-ssolist", "sap-usercontext"];
+
+	// A browser opening the backend's own pages through the proxy (the Fiori launchpad, an app
+	// started from a tile) gets the backend's cookies on localhost. The backend writes them for its
+	// own host: a domain= attribute for that host, and SameSite=None without Secure, which browsers
+	// reject. The XSRF cookie is then never kept and every POST fails with "CSRF token is invalid".
+	// So the cookie is made a localhost one: no domain, and SameSite=None only with Secure (https
+	// listener), Lax otherwise. Tools that ignore these attributes (ADT, vsp, fiori-tools) see no change.
+	/**
+	 * @param {string} cookie one Set-Cookie value
+	 * @param {boolean} secure the request came in on the https listener
+	 */
+	const localCookie = (cookie, secure) => {
+		let parts = cookie.split(";").map((p) => p.trim()).filter((p) => p && !/^domain=/i.test(p));
+		const none = parts.some((p) => /^samesite=none$/i.test(p));
+		const hasSecure = parts.some((p) => /^secure$/i.test(p));
+		if (none && !hasSecure) {
+			if (secure) parts.push("Secure");
+			else parts = parts.map((p) => (/^samesite=none$/i.test(p) ? "SameSite=Lax" : p));
+		}
+		return parts.join("; ");
+	};
 	const primed = new Map();
 	const primeCookies = async (url, baseHeaders) => {
 		const client = url.searchParams.get("sap-client") || "";
@@ -267,6 +288,9 @@ async function main() {
 					const h = up.headers;
 					const setCookies = (h["set-cookie"] || []).map((c) => c.split("=")[0]).join(",");
 					console.log(`[btp-proxy]   <- ${up.statusCode} ${req.method} ${url.pathname} sap-system=${h["sap-system"] || "-"} www-authenticate=${h["www-authenticate"] || "-"} set-cookie=${setCookies || "-"}`);
+				}
+				if (up.headers["set-cookie"]) {
+					up.headers["set-cookie"] = up.headers["set-cookie"].map((c) => localCookie(c, Boolean(/** @type {any} */ (req.socket).encrypted)));
 				}
 				res.writeHead(up.statusCode, up.headers);
 				up.pipe(res);

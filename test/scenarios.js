@@ -172,7 +172,7 @@ const request = (url, options = {}) => new Promise((resolve, reject) => {
 	lib.get(url, { rejectUnauthorized: false, ...options }, (res) => {
 		let body = "";
 		res.on("data", (c) => (body += c));
-		res.on("end", () => resolve({ status: res.statusCode, body }));
+		res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
 	}).on("error", reject);
 });
 const waitFor = async (what, check, seconds = 30) => {
@@ -194,7 +194,11 @@ async function btpWorld(envFile = {}) {
 			res.writeHead(401, { "set-cookie": ["sap-usercontext=sap-client=100; path=/", "sap-ssolist=SSO1; path=/", "other=x"] });
 			return res.end();
 		}
-		res.writeHead(200, { "content-type": "application/json" });
+		// the backend's own pages set cookies for the backend's host, SameSite=None without Secure
+		const cookies = String(req.url).includes("/sap/bc/ui2/flp")
+			? { "set-cookie": ["sap-XSRF_SYS_100=tok; path=/; HttpOnly; SameSite=None", "MYSAPSSO2=t; path=/; domain=.backend.internal; HttpOnly; SameSite=None", "kept=1; path=/; SameSite=None; Secure"] }
+			: {};
+		res.writeHead(200, { "content-type": "application/json", ...cookies });
 		res.end(JSON.stringify({ url: req.url, headers: req.headers }));
 	});
 	const services = http.createServer((req, res) => {
@@ -280,6 +284,14 @@ async function proxy() {
 		assert.match(seen.headers.cookie, /sap-ssolist=SSO1/);
 		assert.doesNotMatch(seen.headers.cookie, /other=x/);
 
+		// a browser on the backend's own pages: cookies become localhost cookies it keeps
+		r = await request(`${base}/sap/bc/ui2/flp`);
+		assert.deepStrictEqual(r.headers["set-cookie"], [
+			"sap-XSRF_SYS_100=tok; path=/; HttpOnly; SameSite=Lax",
+			"MYSAPSSO2=t; path=/; HttpOnly; SameSite=Lax",
+			"kept=1; path=/; SameSite=None; Secure"
+		]);
+
 		// ADT's virtual host probe is answered by the proxy, the backend never sees it
 		const before = w.upstreamRequests.length;
 		r = await request(`${base}/sap/public/bc/icf/virtualhost`);
@@ -290,6 +302,9 @@ async function proxy() {
 			r = await request(`https://127.0.0.1:${w.ports.tls}/sap/bc/adt/discovery`);
 			assert.strictEqual(r.status, 200, "https listener");
 			assert.strictEqual((await request(`https://127.0.0.1:${w.ports.tls}/sap/public/bc/icf/virtualhost`)).status, 404);
+			// on https the cookie keeps SameSite=None and gets Secure
+			r = await request(`https://127.0.0.1:${w.ports.tls}/sap/bc/ui2/flp`);
+			assert.strictEqual(r.headers["set-cookie"][0], "sap-XSRF_SYS_100=tok; path=/; HttpOnly; SameSite=None; Secure");
 		} else {
 			console.log("  (openssl not found: https listener not tested)");
 		}

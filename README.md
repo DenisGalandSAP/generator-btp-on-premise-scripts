@@ -103,6 +103,16 @@ an extension or Eclipse update. Then add the system as `https://127.0.0.1:<port 
 ADT, an ABAP Cloud Project in Eclipse. `btp-on-premise-setup adt-mcp` prints the `claude mcp add` command for a
 vsp server behind the proxy.
 
+## The backend's own pages in a browser
+
+The proxy can also serve pages the backend renders itself, such as the on-premise Fiori launchpad:
+`http://localhost:<port>/sap/bc/ui2/flp?sap-client=<client>`. The proxy logs on with the destination's
+credentials, so everyone using that port works as the destination's user. It rewrites the backend's cookies into
+localhost cookies (no `domain=`, and `SameSite=None` becomes `Lax` on http, or gets `Secure` on https), so the
+browser keeps the XSRF cookie and POST requests are not refused with "CSRF token is invalid". When the Cloud
+Connector blocks `/sap/public`, a custom theme can't load: add `&sap-theme=sap_horizon` to use the standard
+theme, which loads from the UI5 libraries.
+
 ## Environments
 
 Each run of the generator sets up one environment. Run it again with a new name (`qual`, `prod`…) to add
