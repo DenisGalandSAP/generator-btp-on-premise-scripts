@@ -263,11 +263,16 @@ async function main() {
 			const { authHeader } = await findDestination();
 			if (authHeader) headers.authorization = authHeader;
 			else if (basicAuth && !headers.authorization) headers.authorization = basicAuth;
-			if (/^Basic /i.test(headers.authorization || "") && !/(^|;\s*)sap-ssolist=/.test(headers.cookie || "")) {
+			// Always this proxy's own values: a browser shares cookies between localhost ports, so the
+			// sap-ssolist and the MYSAPSSO2 logon ticket of a proxy for another client would reach this
+			// one, and the backend answers with its logon page (a ticket wins over the Basic logon). The
+			// proxy logs on itself here, so the browser's ticket is never needed.
+			if (/^Basic /i.test(headers.authorization || "")) {
 				const extra = await primeCookies(url, headers);
-				const existing = (headers.cookie || "").split(";").map((c) => c.trim()).filter(Boolean);
-				const names = new Set(existing.map((c) => c.split("=")[0]));
-				headers.cookie = existing.concat(extra.filter((c) => !names.has(c.split("=")[0]))).join("; ");
+				const existing = (headers.cookie || "").split(";").map((c) => c.trim()).filter(Boolean)
+					.filter((c) => ![...PRIME_COOKIES, "MYSAPSSO2"].includes(c.split("=")[0]));
+				headers.cookie = existing.concat(extra).join("; ");
+				if (!headers.cookie) delete headers.cookie;
 			}
 			if (process.env.BTP_PROXY_DEBUG) {
 				const [scheme, value] = (headers.authorization || "").split(" ");
