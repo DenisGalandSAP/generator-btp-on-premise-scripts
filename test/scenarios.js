@@ -190,6 +190,11 @@ async function btpWorld(envFile = {}) {
 	// the connectivity proxy: plain HTTP proxy semantics (absolute URL), the backend answers 401 without a logon
 	const upstream = http.createServer((req, res) => {
 		upstreamRequests.push({ url: req.url, headers: req.headers });
+		// a static file the backend serves without a logon: no cookie at all
+		if (!req.headers.authorization && String(req.url).includes("/sap/bc/ui5_ui5/static/")) {
+			res.writeHead(200, { "content-type": "text/plain" });
+			return res.end("static");
+		}
 		if (!req.headers.authorization) {
 			res.writeHead(401, { "set-cookie": ["sap-usercontext=sap-client=100; path=/", "sap-ssolist=SSO1; path=/", "other=x"] });
 			return res.end();
@@ -271,8 +276,13 @@ async function proxy() {
 		assert.strictEqual(health.tlsPort, w.ports.tls);
 		assert.ok(health.pid > 0);
 
+		// first a URL the backend serves without a logon: priming gets no cookie, and that empty
+		// answer must not be kept, or the next Basic logon would go out without the SSO list
+		let r = await request(`${base}/sap/bc/ui5_ui5/static/app.js`);
+		assert.strictEqual(r.status, 200, r.body);
+
 		// an ADT call: absolute URL with sap-client, connectivity token, location id, destination logon, primed cookies
-		let r = await request(`${base}/sap/bc/adt/discovery`);
+		r = await request(`${base}/sap/bc/adt/discovery`);
 		assert.strictEqual(r.status, 200, r.body);
 		const seen = JSON.parse(r.body);
 		assert.strictEqual(seen.url, "http://backend.internal:8000/sap/bc/adt/discovery?sap-client=100");

@@ -233,7 +233,12 @@ async function main() {
 				resolve((up.headers["set-cookie"] || []).map((c) => c.split(";")[0]).filter((c) => PRIME_COOKIES.includes(c.split("=")[0])));
 			}).on("error", reject).end();
 		});
-		primed.set(client, { cookies, expiresAt: Date.now() + 10 * 60 * 1000 });
+		// Kept only when the backend handed out its SSO list: a URL it serves without a logon (a
+		// static launchpad file) answers with no cookie at all, and caching that empty answer made
+		// every fresh Basic logon fail with 401 for ten minutes. Primed again on the next request.
+		if (cookies.some((c) => c.startsWith("sap-ssolist="))) {
+			primed.set(client, { cookies, expiresAt: Date.now() + 10 * 60 * 1000 });
+		}
 		return cookies;
 	};
 
