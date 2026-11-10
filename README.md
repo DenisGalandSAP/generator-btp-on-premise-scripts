@@ -84,8 +84,10 @@ Cloud Connector exposes `/sap/bc/adt` for the system. Pick "ABAP development" in
 if it has none. Each environment (one per system and client, e.g. `d01-100`) gets:
 
 - `npm run btp-proxy:<env>`: the proxy on `http://127.0.0.1:<port>` and `https://127.0.0.1:<port + 393>`. ADT only
-  accepts https, and the proxy answers its `/sap/public/bc/icf/virtualhost` probe itself, because the Cloud
-  Connector usually blocks `/sap/public`;
+  accepts https. Over HTTP, ADT assumes a cloud system and calls endpoints an on-premise backend doesn't have,
+  which the Cloud Connector usually blocks with 403 (ADT reads that as a failed logon). The proxy answers them
+  itself: `/sap/public/bc/icf/virtualhost` returns the proxy's own URL as API and UI host,
+  `/.well-known/sap-adt-info` returns 404 so ADT keeps the Basic logon, and `/sap/public/bc/icf/logoff` returns 200;
 - `scripts/btp-mcp.js <env> -- <command>`: starts the proxy in the background when none runs, then the command,
   for an MCP server that Claude Code starts without a terminal.
 
@@ -102,6 +104,41 @@ with `-vm`, else the bundled JRE. It looks for folders whose name starts with `e
 an extension or Eclipse update. Then add the system as `https://127.0.0.1:<port + 393>`: a destination in VS Code
 ADT, an ABAP Cloud Project in Eclipse. `btp-on-premise-setup adt-mcp` prints the `claude mcp add` command for a
 vsp server behind the proxy.
+
+### In SAP Business Application Studio
+
+ADT for VS Code also runs in a dev space, through the same proxy and the same cf tunnel. Put the environment there
+the way the generator lays it out (`.env.<env>` in the project folder, the scripts in `scripts/`), log in with
+`cf login`, and start the proxy:
+
+```bash
+node scripts/btp-proxy.js --profile d01-100
+npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup adt-cert
+```
+
+The dev space needs outbound ssh for the tunnel: `cf ssh <app> -c "echo ok"` answers `ok` when it has it. Then add
+the system in ADT as `https://127.0.0.1:5443` and log on with "Open with Default Browser". The browser runs on your
+own machine and reaches the proxy through the dev space's port forwarding (`portssl5443-workspaces-...`); the
+backend then sends it to ADT's logon callback on a local port of the dev space, which that browser can't open, so
+the proxy rewrites that redirect to the forwarding address of the callback port. When `adt-cert` doesn't find the
+ADT extension, set `ADT_VSCODE_EXTENSIONS_DIR` to the folder that holds `sapse.adt-vscode-*`.
+
+The dev space has its own route to the destinations as well (`http://<destination>.dest` through its proxy on
+`localhost:8887`), and the proxy uses it when no `BTP_APP` is set, or with `--bas`. It needs no cf at all, but that
+route drops every `Set-Cookie` of the backend: ADT gets its reentrance ticket through, then fails with "Logon has
+failed" because it never receives its session cookies. Use it for OData reads, not for ADT. The destination then
+has to be on the subaccount, with `WebIDEEnabled=true`, `HTML5.DynamicDestination=true` and `sap-client`
+(`--client <n>` sets it when the dev space's destination list can't be read).
+
+If ADT was already connecting before the certificate was trusted, its language server can stay stuck after a reload
+(empty communication log, "AdtLs destination service was not initialized yet!" in the ADT error log). Stop it, move
+its workspace and stored systems aside, reload the window and add the system again:
+
+```bash
+pkill -f adt-ls/linux
+W=$(ls -d ~/.vscode/data/User/workspaceStorage/*/SAPSE.adt-vscode/adtWorkspace)
+mv "$W" "$W.bak"; mv ~/.adtls ~/.adtls.bak
+```
 
 ## The backend's own pages in a browser
 
