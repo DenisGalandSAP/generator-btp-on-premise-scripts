@@ -371,8 +371,18 @@ module.exports = class extends Generator {
 
 	/* ---------- 3. org / space / app ---------- */
 
+	// An empty org list says nothing: keep why it is empty, the Organization step shows it
 	async _orgs() {
-		if (!this.cache.orgs) this.cache.orgs = await cf.orgs();
+		if (!this.cache.orgs) {
+			try {
+				this.cache.orgs = await cf.orgs();
+				this.orgsProblem = this.cache.orgs.length ? undefined
+					: `No org is visible to ${this.cfStatus.user || "this user"} on ${this.cfStatus.api || "the current API endpoint"} - check that this is the region of the subaccount, and that the user has a role in its Cloud Foundry org or space`;
+			} catch (e) {
+				this.orgsProblem = `Could not read the orgs from ${this.cfStatus.api || "Cloud Foundry"}: ${e.message}`;
+				return [];
+			}
+		}
 		return this.cache.orgs;
 	}
 
@@ -409,7 +419,10 @@ module.exports = class extends Generator {
 	async _promptTarget() {
 		const prev = this.existingEnv;
 		const answers = await this.prompt([
-			this._label("targetInfo", () => `Logged in to ${this.cfStatus.api} as ${this.cfStatus.user || "?"}`),
+			this._label("targetInfo", async () => {
+				await this._orgs();
+				return this.orgsProblem || `Logged in to ${this.cfStatus.api} as ${this.cfStatus.user || "?"}`;
+			}),
 			{
 				type: "list",
 				name: "org",
@@ -417,7 +430,10 @@ module.exports = class extends Generator {
 				choices: async () => (await this._orgs()).map((o) => o.name),
 				default: prev.BTP_CF_ORG || this.cfStatus.org,
 				guiOptions: { mandatory: true },
-				validate: required("Organization")
+				validate: async (v) => {
+					await this._orgs();
+					return this.orgsProblem || required("Organization")(v);
+				}
 			},
 			{
 				type: "list",
