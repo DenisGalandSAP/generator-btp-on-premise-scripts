@@ -187,6 +187,7 @@ For an environment `<env>`:
 | `.env.<env>` | the `BTP_*` settings (`BTP_CF_API`, org, space, app, destinations, ports) and `USR` / `SAP_PWD`; other keys are kept. `.env` and `.env.<env>` are added to `.gitignore` |
 | `package.json` | the scripts `btp-proxy:<env>`, `start-btp:<env>`, `deploy-btp:<env>` and `deploy-btp-test:<env>` |
 | `.vscode/launch.json` | a "Run with BTP destination (<env>)" run configuration (`npm run start-btp:<env>`); existing configurations are kept |
+| `.vscode/tasks.json` | ABAP folders only: a "BTP proxy <env>" task (F1 > Tasks: Run Task) that starts the proxy; with a destination without authentication it asks for the ABAP user and a masked password and passes them as `BTP_PROXY_USER` / `BTP_PROXY_PWD`, nothing is saved; existing tasks are kept |
 
 The scripts still read a plain `.env` after `.env.<env>`, for values all environments share, such as
 `BTP_PROXY_USER` / `BTP_PROXY_PWD`. It never overrides the environment's own values.

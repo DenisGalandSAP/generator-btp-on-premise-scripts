@@ -185,7 +185,9 @@ async function cli() {
 	await assert.rejects(commands.apply({ ...abapArgs, "deploy-destination": "SYS_DEPLOY" }), /no deployment/);
 	const abapResult = await commands.apply(abapArgs);
 	assert.deepStrictEqual(abapResult.scripts, { proxy: "npm run btp-proxy:d01" });
-	assert.deepStrictEqual(abapResult.written.sort(), [".env.d01", ".gitignore", "package.json", "scripts/btp-env.js", "scripts/btp-mcp.js", "scripts/btp-proxy.js"].map((f) => f.replace(/\//g, path.sep)).sort());
+	assert.deepStrictEqual(abapResult.written.sort(), [".env.d01", ".gitignore", ".vscode/tasks.json", "package.json", "scripts/btp-env.js", "scripts/btp-mcp.js", "scripts/btp-proxy.js"].map((f) => f.replace(/\//g, path.sep)).sort());
+	const abapTask = JSON.parse(fs.readFileSync(path.join(abapDir, ".vscode", "tasks.json"), "utf8")).tasks[0];
+	assert.deepStrictEqual([abapTask.label, abapTask.options], ["BTP proxy d01", undefined], "basic destination: the task asks for no ABAP user");
 	const abapEnv = parseEnv(fs.readFileSync(path.join(abapDir, ".env.d01"), "utf8"));
 	assert.deepStrictEqual([abapEnv.BTP_PROXY_PORT, abapEnv.BTP_PROXY_TLS_PORT, abapEnv.BTP_CF_USER, abapEnv.BTP_CF_PASSWORD_ENV], ["5050", "5443", "ep@example.org", "EP_CF_PASSWORD"]);
 	const abapPkg = JSON.parse(fs.readFileSync(path.join(abapDir, "package.json"), "utf8"));
@@ -522,6 +524,13 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.deepStrictEqual(JSON.parse(read("package.json")).scripts, { "btp-proxy:d01": "node scripts/btp-proxy.js --profile d01" });
 			assert.ok(fs.existsSync(path.join(dir, "scripts", "btp-mcp.js")) && !fs.existsSync(path.join(dir, "scripts", "btp.js")));
 			assert.ok(!fs.existsSync(path.join(dir, "ui5-btp-d01.yaml")) && !fs.existsSync(path.join(dir, "ui5-deploy-btp-d01.yaml")));
+			// F1 > Tasks: Run Task starts the proxy; the destination logs on itself, so nothing is asked
+			const tasks = JSON.parse(read(".vscode/tasks.json"));
+			const task = tasks.tasks.find((t) => t.label === "BTP proxy d01");
+			assert.strictEqual(task.command, "npm run btp-proxy:d01");
+			assert.strictEqual(task.isBackground, true);
+			assert.strictEqual(task.options, undefined, "no ABAP user asked for a BasicAuthentication destination");
+			assert.strictEqual(tasks.inputs, undefined);
 		},
 		{ from: abapFolder }
 	);
@@ -533,8 +542,21 @@ api.cf.eu10-002.hana.ondemand.com
 			assert.strictEqual(env.BTP_DESTINATION, "SYS_DEPLOY");
 			assert.strictEqual(env.BTP_PROXY_USER, undefined, "no ABAP user written to the environment");
 			assert.strictEqual(env.BTP_PROXY_PWD, undefined, "no ABAP password written to the environment");
+			// the task asks for the user's own ABAP logon, the password masked, and keeps the user's other tasks
+			const tasks = JSON.parse(read(".vscode/tasks.json"));
+			assert.deepStrictEqual(tasks.tasks.map((t) => t.label), ["build", "BTP proxy d01"]);
+			const task = tasks.tasks[1];
+			assert.deepStrictEqual(task.options.env, { BTP_PROXY_USER: "${input:btpProxyAbapUser}", BTP_PROXY_PWD: "${input:btpProxyAbapPassword}" });
+			assert.deepStrictEqual(tasks.inputs.map((i) => [i.id, i.type, !!i.password]), [["keep", "pickString", false], ["btpProxyAbapUser", "promptString", false], ["btpProxyAbapPassword", "promptString", true]]);
 		},
-		{ from: abapFolder }
+		{
+			from: abapFolder,
+			setup: (dir) => {
+				fs.mkdirSync(path.join(dir, ".vscode"), { recursive: true });
+				// JSONC, as VS Code writes it
+				fs.writeFileSync(path.join(dir, ".vscode", "tasks.json"), '{\n  // mine\n  "version": "2.0.0",\n  "tasks": [{ "label": "build", "type": "shell", "command": "make" }],\n  "inputs": [{ "id": "keep", "type": "pickString", "options": ["a"], "description": "x" }]\n}\n');
+			}
+		}
 	);
 	if (isFixture) {
 		await scenario(
