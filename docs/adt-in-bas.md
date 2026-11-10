@@ -138,6 +138,27 @@ The first time:
 
 ADT asks for this browser logon again when its session expires.
 
+## Several clients or systems
+
+Set up one environment per client, in the same folder: run route A or B of step 4 once per destination, each
+time with its own environment name. For example, for clients 100 and 300 of a system S4H:
+
+```bash
+cd ~/projects/adt
+for e in "s4h-100 S4HCLNT100" "s4h-300 S4HCLNT300"; do set -- $e
+  npx -y -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup apply --abap \
+    --project . --env $1 --org YOUR_ORG --space YOUR_SPACE \
+    --app YOUR_TUNNEL_APP --destination $2 --cf-user YOUR_CF_EMAIL --no-sso
+done
+```
+
+Each environment gets its own ports. The first one keeps 5050 and 5443, and the next ones get the next free pair
+(5052 and 5445 here). `grep PORT .env.*` shows them. Start each proxy in its own terminal (step 6, with
+`npm run btp-proxy:s4h-100` and `npm run btp-proxy:s4h-300`), and add one system per client in ADT (step 7), each
+with its own https port: `https://127.0.0.1:5443` for client 100, `https://127.0.0.1:5445` for client 300.
+
+The certificate (step 5) is the same for all of them.
+
 ## Troubleshooting
 
 | What you see | What to do |
