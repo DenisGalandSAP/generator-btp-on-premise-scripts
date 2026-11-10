@@ -20,6 +20,8 @@ const project = require("./lib/project");
 const cf = require("./lib/cf");
 const regions = require("./lib/regions");
 const setup = require("./lib/setup");
+const { version: VERSION } = require("../../package.json");
+const SETUP_CMD = `npx -y -p @scodigis/generator-btp-on-premise-scripts@${VERSION} btp-on-premise-setup`;
 
 // value of the "create a new tunnel app" choice in the app list
 const CREATE_TUNNEL = "*create-tunnel*";
@@ -509,6 +511,11 @@ module.exports = class extends Generator {
 		const describe = async (name, purpose) => {
 			const d = await this._destination(name);
 			if (!d) return "";
+			if (abap && purpose === "Runtime") {
+				// ADT logs on through the proxy: whoever uses this environment works on the system as that logon
+				if (d.Authentication === "BasicAuthentication") return `ADT works on the system as ${d.User || "the destination user"} (taken from the destination), for everyone using this environment. To log on as yourself, pick a destination without authentication`;
+				return "ADT logs on as you: start the proxy with your own ABAP user in BTP_PROXY_USER and BTP_PROXY_PWD (shown at the end)";
+			}
 			if (d.Authentication === "BasicAuthentication") return `${purpose}: logon as ${d.User || "the destination user"} (taken from the destination)`;
 			return `${purpose}: the destination has no authentication - ${purpose === "Deploy" ? "the ABAP user and password are asked on the next step" : "the browser asks for the logon"}`;
 		};
@@ -695,9 +702,18 @@ module.exports = class extends Generator {
 		if (this.project.abap) {
 			const env = setup.profileEnv(this.project.root, this.profile).values;
 			this.log(`${pad(s.proxy)}the proxy: http://127.0.0.1:${env.BTP_PROXY_PORT}, https://127.0.0.1:${env.BTP_PROXY_TLS_PORT} for ADT`);
-			this.log("For ABAP Development Tools, create and trust the localhost certificate once:");
-			this.log("  npx -p @scodigis/generator-btp-on-premise-scripts btp-on-premise-setup adt-cert");
-			this.log(`then add the system in ADT as https://127.0.0.1:${env.BTP_PROXY_TLS_PORT} (Eclipse: ABAP Cloud Project). An ADT MCP server can be started through scripts/btp-mcp.js.`);
+			this.log("For ABAP Development Tools, create and trust the localhost certificate once (again after an ADT update):");
+			this.log(`  ${SETUP_CMD} adt-cert`);
+			if (this.runtimeDest && this.runtimeDest.Authentication === "NoAuthentication") {
+				this.log("Start the proxy with your own ABAP user (the password is not shown and not saved):");
+				this.log("  read -rp 'ABAP user: ' BTP_PROXY_USER; read -rsp 'Password: ' BTP_PROXY_PWD; echo; export BTP_PROXY_USER BTP_PROXY_PWD");
+				this.log(`  npm run ${s.proxy}`);
+			} else {
+				this.log(`ADT works on the system as ${(this.runtimeDest && this.runtimeDest.User) || "the destination user"}, the logon of ${a.runtimeDestination}.`);
+			}
+			this.log(`Then add the system in ADT as https://127.0.0.1:${env.BTP_PROXY_TLS_PORT} (Eclipse: ABAP Cloud Project) and log on with "Open with Default Browser".`);
+			if (process.env.H2O_URL) this.log("In Business Application Studio this needs 'cf ssh' from the dev space: check with  cf ssh " + a.app + " -c \"echo ok\"");
+			this.log("An ADT MCP server can be started through scripts/btp-mcp.js.");
 		} else {
 			this.log(`${pad(s.proxy)}only the proxy (${s.start ? "runtime" : "deploy"} destination)`);
 		}
