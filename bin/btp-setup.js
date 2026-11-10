@@ -354,7 +354,9 @@ const commands = {
 			if (problem) throw new Error(problem);
 			return d;
 		};
-		check(answers.runtimeDestination);
+		const runtime = check(answers.runtimeDestination);
+		// ADT through a destination without authentication: the proxy logs on with the user's own ABAP user
+		answers.proxyLogon = answers.abap && runtime.Authentication === "NoAuthentication";
 		const warnings = [];
 		if (deploy) {
 			const d = check(answers.deployDestination);

@@ -97,6 +97,7 @@ Either route creates:
   scripts/btp-proxy.js the proxy
   scripts/btp-env.js
   scripts/btp-mcp.js   for an ADT MCP server, optional
+  .vscode/tasks.json   the "BTP proxy YOUR_ENV" task that starts the proxy (step 6)
 ```
 
 ## 5. Trust the proxy's certificate
@@ -115,7 +116,10 @@ certificates.
 
 ## 6. Start the proxy
 
-Each time you work, in a terminal:
+Each time you work: press F1, run **Tasks: Run Task**, and pick **BTP proxy YOUR_ENV**. It asks for your ABAP
+user, then your password (masked); neither is saved. The proxy opens in its own terminal panel.
+
+From a terminal instead:
 
 ```bash
 cd ~/projects/adt
@@ -153,8 +157,8 @@ done
 ```
 
 Each environment gets its own ports. The first one keeps 5050 and 5443, and the next ones get the next free pair
-(5052 and 5445 here). `grep PORT .env.*` shows them. Start each proxy in its own terminal (step 6, with
-`npm run btp-proxy:s4h-100` and `npm run btp-proxy:s4h-300`), and add one system per client in ADT (step 7), each
+(5052 and 5445 here). `grep PORT .env.*` shows them. Start each proxy with its own task (step 6: "BTP proxy s4h-100" and
+"BTP proxy s4h-300"), and add one system per client in ADT (step 7), each
 with its own https port: `https://127.0.0.1:5443` for client 100, `https://127.0.0.1:5445` for client 300.
 
 The certificate (step 5) is the same for all of them.

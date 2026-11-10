@@ -681,7 +681,8 @@ module.exports = class extends Generator {
 			deployDestination: this.setupDeploy ? a.deployDestination : undefined,
 			credentials: !!this.needsCredentials,
 			library: !!this.project.library,
-			abap: !!this.project.abap
+			abap: !!this.project.abap,
+			proxyLogon: !!this.project.abap && !!this.runtimeDest && this.runtimeDest.Authentication === "NoAuthentication"
 		});
 		for (const [file, contents] of result.files) {
 			const target = path.join(this.project.root, file);
@@ -720,8 +721,9 @@ module.exports = class extends Generator {
 			this.log(`${pad(s.proxy)}the proxy: http://127.0.0.1:${env.BTP_PROXY_PORT}, https://127.0.0.1:${env.BTP_PROXY_TLS_PORT} for ADT`);
 			this.log("For ABAP Development Tools, create and trust the localhost certificate once (again after an ADT update):");
 			this.log(`  ${SETUP_CMD} adt-cert`);
+			this.log(`Start the proxy with F1 > Tasks: Run Task > "BTP proxy ${this.profile}".`);
 			if (this.runtimeDest && this.runtimeDest.Authentication === "NoAuthentication") {
-				this.log("Start the proxy with your own ABAP user (the password is not shown and not saved):");
+				this.log("It asks for your ABAP user and password (not shown, not saved). From a terminal instead:");
 				this.log("  read -rp 'ABAP user: ' BTP_PROXY_USER; read -rsp 'Password: ' BTP_PROXY_PWD; echo; export BTP_PROXY_USER BTP_PROXY_PWD");
 				this.log(`  npm run ${s.proxy}`);
 			} else {

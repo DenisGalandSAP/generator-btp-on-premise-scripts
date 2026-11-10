@@ -166,6 +166,12 @@ function plan(root, a) {
 	if (launch && launch.error) warnings.push(`${launch.error} - add a run configuration for 'npm run ${scripts.start}' yourself`);
 	else if (launch) put(path.join(".vscode", "launch.json"), launch.text);
 
+	if (a.abap) {
+		const tasks = project.tasksJson(project.read(path.join(root, ".vscode", "tasks.json")), p, { logon: !!a.proxyLogon });
+		if (tasks && "error" in tasks) warnings.push(`${tasks.error} - start the proxy with 'npm run ${scripts.proxy}' instead`);
+		else if (tasks) put(path.join(".vscode", "tasks.json"), tasks.text);
+	}
+
 	const gitignoreBefore = project.read(path.join(root, ".gitignore"));
 	let gitignore = gitignoreBefore;
 	for (const entry of [".env", envFile]) gitignore = project.ensureGitignore(gitignore, entry) ?? gitignore;

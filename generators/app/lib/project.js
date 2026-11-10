@@ -402,6 +402,60 @@ function launchJson(text, profile, { dropLegacy = false } = {}) {
 	return { text: JSON.stringify(launch, null, 4) + "\n" };
 }
 
+/* ---------- .vscode/tasks.json (ABAP folders) ---------- */
+
+const TASK_INPUT_USER = "btpProxyAbapUser";
+const TASK_INPUT_PASSWORD = "btpProxyAbapPassword";
+
+/**
+ * A VS Code task that starts an environment's proxy: F1 > Tasks: Run Task > "BTP proxy <env>". With `logon`
+ * (a destination without authentication) it asks for the ABAP user and a masked password and passes them to
+ * the proxy as BTP_PROXY_USER / BTP_PROXY_PWD; VS Code keeps neither. Tasks and inputs already there are kept;
+ * the environment's own task is replaced, so running the generator again updates it.
+ * @param {string | undefined} text
+ * @param {string} profile
+ * @param {{ logon?: boolean }} [options]
+ * @returns {{ text: string } | { error: string } | undefined}
+ */
+function tasksJson(text, profile, { logon = false } = {}) {
+	const label = `BTP proxy ${profile}`;
+	/** @type {Record<string, any>} */
+	const task = {
+		label,
+		detail: `npm run btp-proxy:${profile}${logon ? " - asks for your ABAP user and password" : ""}`,
+		type: "shell",
+		command: `npm run btp-proxy:${profile}`,
+		isBackground: true,
+		problemMatcher: [],
+		presentation: { panel: "dedicated", reveal: "always", clear: true }
+	};
+	if (logon) task.options = { env: { BTP_PROXY_USER: `\${input:${TASK_INPUT_USER}}`, BTP_PROXY_PWD: `\${input:${TASK_INPUT_PASSWORD}}` } };
+	/** @type {{ version?: string, tasks: any[], inputs?: any[] }} */
+	let tasks = { version: "2.0.0", tasks: [] };
+	if (text && text.trim()) {
+		try {
+			tasks = parseJsonc(text);
+		} catch (e) {
+			return { error: `.vscode/tasks.json could not be parsed (${e.message})` };
+		}
+	}
+	if (!Array.isArray(tasks.tasks)) tasks.tasks = [];
+	const before = JSON.stringify(tasks);
+	const at = tasks.tasks.findIndex((t) => t && t.label === label);
+	if (at >= 0) tasks.tasks[at] = task;
+	else tasks.tasks.push(task);
+	if (logon) {
+		if (!Array.isArray(tasks.inputs)) tasks.inputs = [];
+		const inputs = [
+			{ id: TASK_INPUT_USER, type: "promptString", description: "ABAP user (BTP proxy)" },
+			{ id: TASK_INPUT_PASSWORD, type: "promptString", description: "ABAP password (BTP proxy)", password: true }
+		];
+		for (const input of inputs) if (!tasks.inputs.some((i) => i && i.id === input.id)) tasks.inputs.push(input);
+	}
+	if (JSON.stringify(tasks) === before) return undefined;
+	return { text: JSON.stringify(tasks, null, 4) + "\n" };
+}
+
 /* ---------- misc ---------- */
 
 function ensureGitignore(text, entry) {
@@ -410,4 +464,4 @@ function ensureGitignore(text, entry) {
 	return (text && !text.endsWith("\n") ? text + "\n" : text || "") + entry + "\n";
 }
 
-module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, ensureGitignore, read, ABAP_MARK, failed };
+module.exports = { inspect, findProjects, profiles, parseEnv, mergeEnv, runtimeYaml, deployYaml, deployDefaults, runtimeDestinations, launchJson, tasksJson, ensureGitignore, read, ABAP_MARK, failed };
