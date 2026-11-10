@@ -525,6 +525,17 @@ api.cf.eu10-002.hana.ondemand.com
 		},
 		{ from: abapFolder }
 	);
+	// a destination without authentication: each person starts the proxy with their own ABAP user
+	await scenario(
+		"ABAP development folder, destination without authentication",
+		{ purpose: "abap", profile: "d01", runtimeDestination: "SYS_DEPLOY" },
+		(read, env) => {
+			assert.strictEqual(env.BTP_DESTINATION, "SYS_DEPLOY");
+			assert.strictEqual(env.BTP_PROXY_USER, undefined, "no ABAP user written to the environment");
+			assert.strictEqual(env.BTP_PROXY_PWD, undefined, "no ABAP password written to the environment");
+		},
+		{ from: abapFolder }
+	);
 	if (isFixture) {
 		await scenario(
 			"defaults taken from the existing ui5.yaml / ui5-deploy.yaml",

@@ -107,6 +107,9 @@ vsp server behind the proxy.
 
 ### In SAP Business Application Studio
 
+Step-by-step guide for a new user, from the dev space to the first logon: [ADT for VS Code in SAP Business
+Application Studio](https://github.com/DenisGalandSAP/generator-btp-on-premise-scripts/blob/main/docs/adt-in-bas.md).
+
 ADT for VS Code also runs in a dev space, through the same proxy and the same cf tunnel. Put the environment there
 the way the generator lays it out (`.env.<env>` in the project folder, the scripts in `scripts/`), log in with
 `cf login`, and start the proxy:
@@ -206,7 +209,7 @@ npm install -g @scodigis/generator-btp-on-premise-scripts
 ```
 
 Reopen the Template Wizard in VS Code or SAP Business Application Studio, and the "BTP On-Premise Access"
-tile appears. The VS Code extension in [`vscode-extension/`](vscode-extension) adds the Command Palette entry
+tile appears. In Business Application Studio the Template Wizard is built in, so `yo` isn't needed there. The VS Code extension in [`vscode-extension/`](vscode-extension) adds the Command Palette entry
 "SAP BTP: Generate BTP On-Premise Destination Scripts", which opens this generator directly. From a terminal,
 run `yo @scodigis/btp-on-premise-scripts` (this needs `npm i -g yo`).
 
