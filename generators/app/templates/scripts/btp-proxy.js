@@ -21,12 +21,22 @@
  *        Development Tools, which only accept https. Uses localhost.crt / localhost.key in BTP_PROXY_TLS_DIR
  *        (default ~/.config/btp-proxy), created by `btp-on-premise-setup adt-cert`.
  *
+ * In a SAP Business Application Studio dev space without BTP_APP (H2O_URL set, or --bas) there is
+ * no cf and no tunnel: requests go through the dev space's own destination proxy as http://<destination>.dest, which
+ * adds the destination's logon and reaches the Cloud Connector itself. Only BTP_DESTINATION and the ports are used.
+ * That proxy drops the backend's Set-Cookie headers: fine for OData reads, not for ABAP Development Tools, which need
+ * their session cookies. With BTP_APP set (an environment from the generator), the cf tunnel is used in a dev space too.
+ *
+ * ABAP Development Tools over HTTP expect a cloud system: /sap/public/bc/icf/virtualhost, /.well-known/sap-adt-info
+ * and /sap/public/bc/icf/logoff are answered here, never forwarded (see the handler).
+ *
  * The ssh tunnel is reopened when Cloud Foundry drops it, after logging in again if the session has expired (see
  * ensureCfTarget in btp-env.js; a rejected password is never tried twice).
  */
 const fs = require("fs");
 const http = require("http");
 const https = require("https");
+const tls = require("tls");
 const net = require("net");
 const os = require("os");
 const path = require("path");
@@ -49,10 +59,17 @@ const APP = /** @type {string} */ (process.env.BTP_APP);
 const DESTINATION = arg("destination") || process.env.BTP_DESTINATION;
 const PORT = Number(arg("port") || process.env.BTP_PROXY_PORT || 5050);
 const TUNNEL_PORT = Number(arg("tunnel-port") || process.env.BTP_TUNNEL_PORT || 20003);
+// BAS only: sap-client when the dev space's destination list doesn't give it
+const CLIENT = arg("client") || process.env.BTP_SAP_CLIENT;
 const TLS_PORT = Number(arg("tls-port") || process.env.BTP_PROXY_TLS_PORT || 0);
 const TLS_DIR = process.env.BTP_PROXY_TLS_DIR || path.join(os.homedir(), ".config", "btp-proxy");
-if (!APP || !DESTINATION) {
-	console.error(`[btp-proxy] BTP_APP and BTP_DESTINATION must be set (${PROFILE ? `.env.${PROFILE}` : ".env"}) - run the 'BTP On-Premise Access' generator again`);
+// SAP Business Application Studio dev space (H2O_URL is set there) without a tunnel app: no cf, see basSetup. With
+// BTP_APP the cf tunnel is used in a dev space too: the dev space's destination proxy drops Set-Cookie, so ADT can't
+// keep its logon session through it, while the tunnel passes the backend's cookies.
+const BAS = process.argv.includes("--bas")
+	|| (Boolean(process.env.H2O_URL) && !process.env.BTP_APP && process.env.BTP_PROXY_MODE !== "cf");
+if (!DESTINATION || (!BAS && !APP)) {
+	console.error(`[btp-proxy] ${BAS ? "BTP_DESTINATION (or --destination)" : "BTP_APP and BTP_DESTINATION"} must be set (${PROFILE ? `.env.${PROFILE}` : ".env"}) - run the 'BTP On-Premise Access' generator again`);
 	process.exit(1);
 }
 
@@ -94,6 +111,7 @@ function cachedToken(creds) {
 }
 
 async function main() {
+	if (BAS) return basSetup();
 	// cf app / cf ssh work on the targeted space; started by btp.js it is already right,
 	// on its own a needed cf login runs in this terminal
 	ensureCfTarget({ interactive: true, log: (msg) => console.log(`[btp-proxy] ${msg}`) });
@@ -186,6 +204,126 @@ async function main() {
 	}
 	console.log(`[btp-proxy] ssh tunnel ready`);
 
+	return serve({
+		dest,
+		target,
+		upstream: { host: "127.0.0.1", port: TUNNEL_PORT },
+		addUpstreamHeaders: async (headers) => {
+			headers["proxy-authorization"] = `Bearer ${await connToken()}`;
+			if (dest.CloudConnectorLocationId) headers["sap-connectivity-scc-location_id"] = dest.CloudConnectorLocationId;
+		},
+		authHeader: async () => (await findDestination()).authHeader
+	});
+}
+
+/**
+ * SAP Business Application Studio: the dev space reaches the subaccount's destinations itself, through its own
+ * HTTP proxy (http_proxy, or localhost:8887) and host names `<destination>.dest`. That proxy adds the
+ * destination's authentication, the connectivity token and the Cloud Connector location, so there is no cf
+ * login, no tunnel and no token here: requests go to the proxy with an absolute http://<destination>.dest URL,
+ * like through the tunnel. sap-client comes from the destination list of the dev space ($H2O_URL).
+ */
+async function basSetup() {
+	const proxyUrl = new URL(process.env.http_proxy || process.env.HTTP_PROXY || "http://localhost:8887");
+	const upstream = { host: proxyUrl.hostname, port: Number(proxyUrl.port || 80) };
+	// like curl in the dev space: through http_proxy first (Node's fetch ignores it), then straight
+	const LOOKUP_TIMEOUT = 15000;
+	const viaProxy = (/** @type {string} */ url) => new Promise((resolve, reject) => {
+		const req = http.get({ host: upstream.host, port: upstream.port, path: url, headers: { host: new URL(url).host }, timeout: LOOKUP_TIMEOUT }, (res) => {
+			let body = "";
+			res.on("data", (c) => (body += c));
+			res.on("error", reject);
+			res.on("end", () => (res.statusCode === 200 ? resolve(body) : reject(new Error(`${res.statusCode} ${body.slice(0, 80)}`))));
+		});
+		req.on("timeout", () => req.destroy(new Error("no answer")));
+		req.on("error", reject);
+	});
+	// https: a CONNECT tunnel through the dev space proxy (http_proxy and https_proxy are the same one there), then TLS
+	// to the host, as curl does
+	const viaConnect = (/** @type {string} */ url) => new Promise((resolve, reject) => {
+		const u = new URL(url);
+		const connect = http.request({ host: upstream.host, port: upstream.port, method: "CONNECT", path: `${u.hostname}:${u.port || 443}`, timeout: LOOKUP_TIMEOUT });
+		connect.on("timeout", () => connect.destroy(new Error("no answer to CONNECT")));
+		connect.on("connect", (res, socket) => {
+			if (res.statusCode !== 200) {
+				socket.destroy();
+				return reject(new Error(`CONNECT ${res.statusCode}`));
+			}
+			const req = https.get({ host: u.hostname, path: `${u.pathname}${u.search}`, agent: false, timeout: LOOKUP_TIMEOUT,
+				createConnection: () => tls.connect({ socket, servername: u.hostname }) }, (r) => {
+				let body = "";
+				r.on("data", (c) => (body += c));
+				r.on("error", reject);
+				r.on("end", () => (r.statusCode === 200 ? resolve(body) : reject(new Error(`${r.statusCode} ${body.slice(0, 80)}`))));
+			});
+			req.on("timeout", () => req.destroy(new Error("no answer")));
+			req.on("error", reject);
+		});
+		connect.on("error", reject);
+		connect.end();
+	});
+	const direct = async (/** @type {string} */ url) => {
+		const res = await fetch(url, { signal: AbortSignal.timeout(LOOKUP_TIMEOUT) });
+		if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 80)}`);
+		return res.text();
+	};
+	const listDestinations = async () => {
+		const url = `${process.env.H2O_URL}/api/listDestinations`;
+		const errors = [];
+		for (const get of url.startsWith("http:") ? [viaProxy, direct] : [viaConnect, direct]) {
+			try {
+				return /** @type {any[]} */ (JSON.parse(await get(url)));
+			} catch (err) {
+				errors.push(err.message);
+			}
+		}
+		throw new Error(errors.join("; "));
+	};
+	/** @type {any} */
+	let dest = { ProxyType: "OnPremise" };
+	try {
+		const found = (await listDestinations()).find((d) => d.Name === DESTINATION);
+		if (!found) throw new Error(`destination '${DESTINATION}' not in the dev space's list - check WebIDEEnabled=true and HTML5.DynamicDestination=true, then curl localhost:8887/reload`);
+		dest = found;
+	} catch (err) {
+		if (/not in the dev space/.test(err.message)) throw err;
+		console.error(`[btp-proxy] destination list not readable (${err.message})${CLIENT ? "" : ", sap-client is not added (--client <n> sets it)"}`);
+	}
+	if (CLIENT) dest = { ...dest, "sap-client": CLIENT };
+	if (dest.ProxyType && dest.ProxyType !== "OnPremise") throw new Error(`Destination '${DESTINATION}' is not OnPremise`);
+	// kept as typed: URL would lower-case the host, and the dev space matches the destination name on it
+	const targetHost = `${DESTINATION}.dest`;
+	const target = new URL(`http://${targetHost}`);
+	console.log(`[btp-proxy] Business Application Studio: destination ${DESTINATION} via ${proxyUrl.host} (client ${dest["sap-client"] || "-"}, auth added by the dev space)`);
+	return serve({ dest, target, targetHost, upstream, addUpstreamHeaders: async () => {}, authHeader: async () => undefined });
+}
+
+/**
+ * @param {{ dest: any, target: URL, targetHost?: string, upstream: { host: string, port: number },
+ *   addUpstreamHeaders: (headers: Record<string, any>) => Promise<void>, authHeader: () => Promise<string | undefined> }} ctx
+ */
+function serve({ dest, target, targetHost = target.host, upstream, addUpstreamHeaders, authHeader: destinationAuth }) {
+	// A browser outside the dev space reaches this proxy through the dev space's port forwarding
+	// (x-forwarded-host portssl5443-workspaces-ws-xyz.<region>.applicationstudio.cloud.sap). The backend then redirects
+	// to a local port of the dev space - ADT's logon callback http://localhost:<port>/adt/redirect?reentrance-ticket=...
+	// - which that browser can't open. Point it at the same forwarding for that port instead.
+	/**
+	 * @param {string | undefined} location
+	 * @param {string | string[] | undefined} fwdHost
+	 * @param {string | string[] | undefined} fwdProto
+	 */
+	const forwardedLocation = (location, fwdHost, fwdProto) => {
+		const host = String(fwdHost || "").split(",")[0].trim();
+		// port<n>-... for an http port, portssl<n>-... for an https one (this proxy's 5443); the callback is http
+		// a host name only (no user info, port or path), so the redirect can't be sent anywhere else
+		const m = /^port(?:ssl)?-?\d+-([a-z0-9][a-z0-9.-]*)$/i.exec(host);
+		const local = /^http:\/\/(?:localhost|127\.0\.0\.1):(\d+)(\/.*)?$/i.exec(location || "");
+		if (!m || !local) return undefined;
+		const proto = String(fwdProto || "https").split(",")[0].trim() === "http" ? "http" : "https";
+		return `${proto}://port${local[1]}-${m[1]}${local[2] || "/"}`;
+	};
+	/** absolute URL for the upstream HTTP proxy, with the host exactly as targetHost */
+	const absolute = (/** @type {URL} */ url) => `${target.protocol}//${targetHost}${url.pathname}${url.search}`;
 	const basicAuth = process.env.BTP_PROXY_USER && process.env.BTP_PROXY_PWD
 		? "Basic " + Buffer.from(`${process.env.BTP_PROXY_USER}:${process.env.BTP_PROXY_PWD}`).toString("base64")
 		: undefined;
@@ -228,7 +366,7 @@ async function main() {
 		delete primeHeaders["content-length"];
 		delete primeHeaders["transfer-encoding"];
 		const cookies = await new Promise((resolve, reject) => {
-			http.request({ host: "127.0.0.1", port: TUNNEL_PORT, method: "GET", path: url.href, headers: primeHeaders }, (up) => {
+			http.request({ host: upstream.host, port: upstream.port, method: "GET", path: absolute(url), headers: primeHeaders }, (up) => {
 				up.resume();
 				resolve((up.headers["set-cookie"] || []).map((c) => c.split(";")[0]).filter((c) => PRIME_COOKIES.includes(c.split("=")[0])));
 			}).on("error", reject).end();
@@ -246,13 +384,30 @@ async function main() {
 		// used by scripts/btp.js to tell a running btp-proxy from anything else on the port
 		if (req.url === "/__btp-proxy/health") {
 			res.writeHead(200, { "content-type": "application/json" });
-			res.end(JSON.stringify({ profile: PROFILE, app: APP, destination: DESTINATION, port: PORT, tunnelPort: TUNNEL_PORT, tlsPort: TLS_PORT || undefined, pid: process.pid }));
+			res.end(JSON.stringify({ profile: PROFILE, mode: BAS ? "bas" : "cf", app: APP, destination: DESTINATION, port: PORT, tunnelPort: BAS ? undefined : TUNNEL_PORT, tlsPort: TLS_PORT || undefined, pid: process.pid }));
 			return;
 		}
-		// ABAP Development Tools probe this first; the Cloud Connector usually does not expose /sap/public and
-		// answers 403, which ADT takes as a failed logon. 404 tells it the system has no virtual host mapping.
-		if (req.url.split("?")[0] === "/sap/public/bc/icf/virtualhost") {
+		// ABAP Development Tools over HTTP assume a cloud system and call endpoints that an on-premise backend
+		// doesn't have, or that the Cloud Connector blocks with 403 (it rarely exposes /sap/public or
+		// /.well-known). ADT takes a 403 as a failed logon, so the proxy answers these itself:
+		// - virtualhost: the API and UI hosts. Both are this proxy, so every later ADT call comes back here.
+		// - sap-adt-info: 404, ADT then keeps the destination's Basic logon instead of the cloud OAuth flow.
+		// - logoff: 200. The proxy holds the backend logon itself, there is no browser session to end.
+		const pathname = req.url.split("?")[0];
+		if (pathname === "/sap/public/bc/icf/virtualhost") {
+			const encrypted = Boolean(/** @type {any} */ (req.socket).encrypted);
+			const self = `${encrypted ? "https" : "http"}://${req.headers.host || `127.0.0.1:${encrypted ? TLS_PORT : PORT}`}`;
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ relatedUrls: { API: self, UI: self } }));
+			return;
+		}
+		if (pathname === "/.well-known/sap-adt-info") {
 			res.writeHead(404);
+			res.end();
+			return;
+		}
+		if (pathname === "/sap/public/bc/icf/logoff") {
+			res.writeHead(200, { "content-type": "text/plain" });
 			res.end();
 			return;
 		}
@@ -261,11 +416,10 @@ async function main() {
 			if (dest["sap-client"] && !url.searchParams.has("sap-client")) {
 				url.searchParams.set("sap-client", dest["sap-client"]);
 			}
-			const headers = { ...req.headers, host: target.host };
+			const headers = { ...req.headers, host: targetHost };
 			delete headers.connection;
-			headers["proxy-authorization"] = `Bearer ${await connToken()}`;
-			if (dest.CloudConnectorLocationId) headers["sap-connectivity-scc-location_id"] = dest.CloudConnectorLocationId;
-			const { authHeader } = await findDestination();
+			await addUpstreamHeaders(headers);
+			const authHeader = await destinationAuth();
 			if (authHeader) headers.authorization = authHeader;
 			else if (basicAuth && !headers.authorization) headers.authorization = basicAuth;
 			// Always this proxy's own values: a browser shares cookies between localhost ports, so the
@@ -287,30 +441,35 @@ async function main() {
 			}
 
 			// Plain HTTP request to the connectivity proxy with an absolute URL (HTTP proxy semantics)
-			const upstream = http.request({
-				host: "127.0.0.1",
-				port: TUNNEL_PORT,
+			const forward = http.request({
+				host: upstream.host,
+				port: upstream.port,
 				method: req.method,
-				path: url.href,
+				path: absolute(url),
 				headers
 			}, (up) => {
 				if (process.env.BTP_PROXY_DEBUG) {
 					const h = up.headers;
 					const setCookies = (h["set-cookie"] || []).map((c) => c.split("=")[0]).join(",");
-					console.log(`[btp-proxy]   <- ${up.statusCode} ${req.method} ${url.pathname} sap-system=${h["sap-system"] || "-"} www-authenticate=${h["www-authenticate"] || "-"} set-cookie=${setCookies || "-"}`);
+					console.log(`[btp-proxy]   <- ${up.statusCode} ${req.method} ${url.pathname} sap-system=${h["sap-system"] || "-"} www-authenticate=${h["www-authenticate"] || "-"} set-cookie=${setCookies || "-"}${h.location ? ` location=${h.location}` : ""}${req.headers["x-forwarded-host"] ? ` x-forwarded-host=${req.headers["x-forwarded-host"]} x-forwarded-proto=${req.headers["x-forwarded-proto"] || "-"}` : ""}`);
 				}
 				if (up.headers["set-cookie"]) {
 					up.headers["set-cookie"] = up.headers["set-cookie"].map((c) => localCookie(c, Boolean(/** @type {any} */ (req.socket).encrypted)));
 				}
+				const forwarded = forwardedLocation(up.headers.location, req.headers["x-forwarded-host"], req.headers["x-forwarded-proto"]);
+				if (forwarded) {
+					if (process.env.BTP_PROXY_DEBUG) console.log(`[btp-proxy]   location ${up.headers.location} -> ${forwarded}`);
+					up.headers.location = forwarded;
+				}
 				res.writeHead(up.statusCode, up.headers);
 				up.pipe(res);
 			});
-			upstream.on("error", (err) => {
+			forward.on("error", (err) => {
 				console.error(`[btp-proxy] ${req.method} ${req.url}: ${err.message}`);
 				if (!res.headersSent) res.writeHead(502);
 				res.end(`btp-proxy: ${err.message}`);
 			});
-			req.pipe(upstream);
+			req.pipe(forward);
 		} catch (err) {
 			console.error(`[btp-proxy] ${err.message}`);
 			res.writeHead(500);

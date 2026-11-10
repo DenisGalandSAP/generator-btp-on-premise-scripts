@@ -7,6 +7,7 @@
  *   login   cf login without a terminal: user + password variable, rejected password remembered, SSO, targets
  *   proxy   end to end: destination lookup, connectivity headers, cookie priming, ADT virtualhost probe, https,
  *           tunnel dropped and reopened with a new login
+ *   bas     Business Application Studio: dev space destination proxy and destination list, no cf at all
  *   mcp     btp-mcp.js reuses a running proxy, or starts one in the background, then runs the tool
  *   adt     adt-cert: localhost certificate, VS Code ADT JREs (Linux and macOS layouts), Eclipse, WSL paths
  *   apps    which apps of a space can carry the tunnel, and which of them are real applications
@@ -47,7 +48,7 @@ function world(envFile = {}) {
 	const bin = fakeBin("cf", path.join(__dirname, "fakes", "cf.js"));
 	/** @type {NodeJS.ProcessEnv} */
 	const env = {
-		...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CF_|BTP_|FAKE_|EP_)/.test(k))),
+		...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CF_|BTP_|FAKE_|EP_|H2O_URL$|https?_proxy$)/i.test(k))),
 		PATH: `${bin}${path.delimiter}${process.env.PATH}`,
 		FAKE_CF_DIR: cfDir,
 		HOME: home,
@@ -264,6 +265,8 @@ async function proxy() {
 		fs.mkdirSync(dir, { recursive: true });
 		execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=localhost", "-keyout", path.join(dir, "localhost.key"), "-out", path.join(dir, "localhost.crt")], { stdio: "ignore", shell: isWin });
 	}
+	// as in a Business Application Studio dev space: with a tunnel app the cf route is still used (ADT needs cookies)
+	w.env.H2O_URL = "http://127.0.0.1:9";
 	const p = startProxy(w);
 	try {
 		await waitFor("the proxy", () => p.output().includes(tls ? "listening on https" : "listening on http"));
@@ -273,6 +276,7 @@ async function proxy() {
 
 		const health = JSON.parse((await request(`${base}/__btp-proxy/health`)).body);
 		assert.strictEqual(health.destination, "SYS");
+		assert.strictEqual(health.mode, "cf", "tunnel app set: cf route even in a dev space");
 		assert.strictEqual(health.tlsPort, w.ports.tls);
 		assert.ok(health.pid > 0);
 
@@ -311,16 +315,21 @@ async function proxy() {
 			"kept=1; path=/; SameSite=None; Secure"
 		]);
 
-		// ADT's virtual host probe is answered by the proxy, the backend never sees it
+		// ADT's cloud endpoints are answered by the proxy, the backend never sees them
 		const before = w.upstreamRequests.length;
 		r = await request(`${base}/sap/public/bc/icf/virtualhost`);
-		assert.strictEqual(r.status, 404);
+		assert.strictEqual(r.status, 200);
+		assert.deepStrictEqual(JSON.parse(r.body), { relatedUrls: { API: base, UI: base } }, "virtualhost points ADT back at the proxy");
+		assert.strictEqual((await request(`${base}/.well-known/sap-adt-info`)).status, 404, "no OAuth info, ADT keeps Basic");
+		assert.strictEqual((await request(`${base}/sap/public/bc/icf/logoff?sap-client=100`)).status, 200);
 		assert.strictEqual(w.upstreamRequests.length, before);
 
 		if (tls) {
 			r = await request(`https://127.0.0.1:${w.ports.tls}/sap/bc/adt/discovery`);
 			assert.strictEqual(r.status, 200, "https listener");
-			assert.strictEqual((await request(`https://127.0.0.1:${w.ports.tls}/sap/public/bc/icf/virtualhost`)).status, 404);
+			const tlsBase = `https://127.0.0.1:${w.ports.tls}`;
+			r = await request(`${tlsBase}/sap/public/bc/icf/virtualhost`);
+			assert.deepStrictEqual(JSON.parse(r.body).relatedUrls, { API: tlsBase, UI: tlsBase }, "virtualhost on https");
 			// on https the cookie keeps SameSite=None and gets Secure
 			r = await request(`https://127.0.0.1:${w.ports.tls}/sap/bc/ui2/flp`);
 			assert.strictEqual(r.headers["set-cookie"][0], "sap-XSRF_SYS_100=tok; path=/; HttpOnly; SameSite=None; Secure");
@@ -549,10 +558,84 @@ async function apps() {
 	console.log("OK apps scenario (approuter left out, routes or other services make a real application)");
 }
 
+/** Business Application Studio: requests go to the dev space's proxy as http://<destination>.dest, no cf. */
+async function bas() {
+	const seen = [];
+	// the dev space's destination proxy: plain HTTP proxy semantics, it adds the destination's logon itself
+	const devProxy = http.createServer((req, res) => {
+		// like the dev space: H2O_URL is only reachable through this proxy
+		if (String(req.url).endsWith("/api/listDestinations")) {
+			res.writeHead(200, { "content-type": "application/json" });
+			return res.end(JSON.stringify([{ Name: "OTHER", ProxyType: "Internet" }, { Name: "SYS", ProxyType: "OnPremise", WebIDEEnabled: "true", "sap-client": "100" }]));
+		}
+		seen.push({ url: req.url, headers: req.headers });
+		// the backend hands ADT's logon ticket to the callback ADT listens on, a local port of the dev space
+		if (String(req.url).includes("/reentranceticket")) {
+			res.writeHead(307, { location: "http://localhost:44125/adt/redirect?_=1&reentrance-ticket=T%3d" });
+			return res.end();
+		}
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ url: req.url }));
+	});
+	const h2o = http.createServer((req, res) => {
+		// straight to H2O_URL: "Not Found", as seen in a real dev space
+		res.writeHead(404, { "content-type": "text/plain" });
+		res.end("Not Found");
+	});
+	const devPort = await listen(devProxy);
+	const h2oPort = await listen(h2o);
+	const ports = { proxy: await freePort() };
+	// no BTP_APP, no cf login: none of it is used in a dev space
+	const w = world({ BTP_APP: undefined, BTP_CF_API: undefined, BTP_PROXY_PORT: ports.proxy });
+	w.env.H2O_URL = `http://127.0.0.1:${h2oPort}`;
+	w.env.http_proxy = `http://127.0.0.1:${devPort}`;
+	const p = startProxy(w);
+	try {
+		await waitFor("the proxy", () => p.output().includes("listening on http"));
+		const base = `http://127.0.0.1:${ports.proxy}`;
+		assert.deepStrictEqual(w.commands(), [], "cf never called");
+		assert.strictEqual(JSON.parse((await request(`${base}/__btp-proxy/health`)).body).mode, "bas");
+
+		let r = await request(`${base}/sap/bc/adt/discovery`, { headers: { authorization: "Basic dTpw" } });
+		assert.strictEqual(r.status, 200);
+		const last = seen[seen.length - 1];
+		assert.strictEqual(last.url, "http://SYS.dest/sap/bc/adt/discovery?sap-client=100", "absolute .dest URL with the destination's client");
+		assert.strictEqual(last.headers.host, "SYS.dest", "destination name case kept");
+		assert.strictEqual(last.headers["proxy-authorization"], undefined, "no connectivity token, the dev space adds it");
+		assert.strictEqual(last.headers["sap-connectivity-scc-location_id"], undefined);
+
+		// the cloud endpoints ADT asks for are answered here, the dev space proxy never sees them
+		const before = seen.length;
+		r = await request(`${base}/sap/public/bc/icf/virtualhost`);
+		assert.deepStrictEqual(JSON.parse(r.body), { relatedUrls: { API: base, UI: base } });
+		assert.strictEqual((await request(`${base}/.well-known/sap-adt-info`)).status, 404);
+		assert.strictEqual((await request(`${base}/sap/public/bc/icf/logoff`)).status, 200);
+		assert.ok(seen.slice(before).every((s) => !/virtualhost|well-known|logoff/.test(s.url)), "cloud endpoints not forwarded");
+		// ADT's browser logon from outside the dev space: the callback goes through the same port forwarding
+		const ticketUrl = `${base}/sap/bc/adt/core/http/reentranceticket?redirect-url=x`;
+		r = await request(ticketUrl, { headers: { "x-forwarded-host": "portssl5443-workspaces-ws-abc.eu01cf.applicationstudio.cloud.sap", "x-forwarded-proto": "https" } });
+		assert.strictEqual(r.status, 307);
+		assert.strictEqual(r.headers.location, "https://port44125-workspaces-ws-abc.eu01cf.applicationstudio.cloud.sap/adt/redirect?_=1&reentrance-ticket=T%3d");
+		// a forwarded host that isn't a plain host name can't send the ticket elsewhere
+		r = await request(ticketUrl, { headers: { "x-forwarded-host": "port1-x@evil.example", "x-forwarded-proto": "https" } });
+		assert.strictEqual(r.headers.location, "http://localhost:44125/adt/redirect?_=1&reentrance-ticket=T%3d", "no rewrite to another host");
+		// from inside the dev space (curl, ADT itself) the local callback stays as it is
+		assert.strictEqual((await request(ticketUrl)).headers.location, "http://localhost:44125/adt/redirect?_=1&reentrance-ticket=T%3d");
+		console.log("OK bas scenario (dev space proxy, .dest URL, sap-client from the destination list, no cf, logon callback through port forwarding)");
+	} catch (e) {
+		console.error(p.output());
+		throw e;
+	} finally {
+		p.child.kill();
+		devProxy.close();
+		h2o.close();
+	}
+}
+
 /* ------------------------------------------------------------------ */
 
 (async () => {
-	const all = { login, proxy, mcp, adt, apps };
+	const all = { login, proxy, bas, mcp, adt, apps };
 	for (const [name, run] of Object.entries(all)) {
 		if (only.length && !only.includes(name)) continue;
 		await run();

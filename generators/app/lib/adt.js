@@ -51,8 +51,12 @@ function ensureCert({ renew = false, dryRun = false } = {}) {
 /** JREs of the ABAP Development Tools language server for VS Code (local and VS Code Server / WSL / remote). */
 function vscodeJres() {
 	const found = [];
-	for (const base of [".vscode-server", ".vscode", ".vscode-insiders", ".vscode-server-insiders"]) {
-		const ext = path.join(os.homedir(), base, "extensions");
+	// the last ones are Code-OSS based hosts such as SAP Business Application Studio; ADT_VSCODE_EXTENSIONS_DIR
+	// names another extensions folder when the extension sits somewhere else
+	const bases = [".vscode-server", ".vscode", ".vscode-insiders", ".vscode-server-insiders", ".vscode-remote",
+		".vscode-oss", ".openvscode-server", path.join(".local", "share", "code-server")].map((b) => path.join(os.homedir(), b, "extensions"));
+	if (process.env.ADT_VSCODE_EXTENSIONS_DIR) bases.unshift(process.env.ADT_VSCODE_EXTENSIONS_DIR);
+	for (const ext of bases) {
 		for (const name of ls(ext).filter((n) => n.startsWith("sapse.adt-vscode-"))) {
 			// adt-ls/<os>/<ws>/<arch>/plugins/com.sap.adt.jvm.*/jre - search a few levels instead of hard-coding them
 			/** @type {Array<[string, number]>} */
